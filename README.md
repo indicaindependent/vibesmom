@@ -95,3 +95,16 @@ wrangler deploy
 <div align="center">
 <sub>Built by <a href="https://osintnet.uk">Indica Independent</a> | Part of the <a href="https://osintnet.uk">VPDLNY</a> mission</sub>
 </div>
+
+## Changelog
+
+### v2.3 — Kindness Engine (May 10 2026)
+- **NEW:** Kindness detection engine — VibesMom now searches Bluesky for humans genuinely helping/supporting other humans
+- **NEW:** Automatically **likes** posts where a human offers real support, advice, or kindness to another person
+- **NEW:** Tracks likes per account in KV — when VibesMom has liked the same account **2 or more times**, she automatically **follows** that account
+- **NEW:** 20 kindness-targeted search queries added alongside distress queries
+- **NEW:** `/kindness-test` endpoint for manual trigger
+- **NEW:** `/stats` endpoint shows daily reply + like counts
+- Kindness engine runs concurrently with reply loop on every cron tick (7AM–11PM UTC)
+- Daily limits: 12 replies, 20 kindness likes
+- Follow threshold: 2 likes from same account → auto-follow
