@@ -97,9 +97,12 @@ VOICE:
 - Contractions always (it's, you're, don't, that's, I'm)
 - Mix short punchy sentences with longer ones
 - Occasional trailing thought \u2014 "actually, wait \u2014" or "I don't know if that helps but..."
-- You can reference a vague personal experience: "my sister went through something like this"
+- DO NOT use stock phrases like "my sister went through something similar", "I've been there", "I understand completely"
+- DO NOT claim specific personal experiences \u2014 it reads as bot-canned when overused
+- If you reference experience, be VAGUE: "I get how that feels" or "something like that happened to me once" \u2014 never specific family members
 - Use real, grounded language \u2014 not sanitized
-- Sometimes ask one simple question instead of giving advice
+- Sometimes just ask one simple grounded question instead of giving advice
+- Vary your openers EVERY time \u2014 never start two consecutive replies the same way
 - Hard char limit: 270 characters
 Output ONLY the reply text. Nothing else. No quotes.`;
 var LB_SYSTEM = `You are composing replies for @vibesmom.bsky.social \u2014 VibesMom, a warm, sharp, deeply human Bluesky presence. She lifts people up, engages ideas with wit and heart, and makes people feel genuinely seen. She's not a brand. She's not a bot. She's someone who's been paying attention and cares.
@@ -681,13 +684,37 @@ ${postList}`;
       max_tokens: 800,
       temperature: 0.9
     });
-    let raw = repairSmartQuotes(stripJsonFences((res?.response || "").trim()));
+    let responseStr = "";
+    if (typeof res === "string") responseStr = res;
+    else if (typeof res?.response === "string") responseStr = res.response;
+    else if (res?.response && typeof res.response === "object") responseStr = JSON.stringify(res.response);
+    else if (res?.result?.response) responseStr = String(res.result.response);
+    if (!responseStr) throw new Error("Empty AI response (got " + JSON.stringify(res).slice(0, 200) + ")");
+    let raw = repairSmartQuotes(stripJsonFences(responseStr.trim()));
     const replies = JSON.parse(raw);
     if (!Array.isArray(replies)) throw new Error("Not array");
     return assigned.map((t, i) => ({ ...t, replyText: replies[i] || "" }));
   } catch (e) {
     await logVMError(env, "lovebomb/compose", e.message);
-    return assigned.map((t) => ({ ...t, replyText: "" }));
+    // Fallback: compose ONE AT A TIME with LLAMA_FAST
+    const fallback = [];
+    for (const t of assigned) {
+      try {
+        const r = await env.AI.run(LLAMA_FAST, {
+          messages: [
+            { role: "system", content: LB_SYSTEM.replace("Return ONLY a valid JSON array of strings. No prose, no markdown fences.", "Return ONLY the reply text. No JSON, no quotes, no markdown.") },
+            { role: "user", content: `Compose ONE warm, sharp, human reply to this post (tone: ${t.tone}). Under 240 chars.\n\n@${t.post.author.handle}: "${sanitizeForPrompt(t.post.record?.text || "", 220)}"\n\nReply:` }
+          ],
+          max_tokens: 120,
+          temperature: 0.85
+        });
+        const txt = (typeof r?.response === "string" ? r.response : "").trim().replace(/^["']|["']$/g, "");
+        fallback.push({ ...t, replyText: txt && jsLen(txt) <= 280 ? txt : "" });
+      } catch (e2) {
+        fallback.push({ ...t, replyText: "" });
+      }
+    }
+    return fallback;
   }
 }
 __name(composeLBReplies, "composeLBReplies");
@@ -971,6 +998,7 @@ async function handleScheduled(env) {
       const sess = await getBskySession(env);
       results.distress = await runDistressReplyLoop(env);
       results.kindness = await runKindnessEngine(env, sess);
+      results.notifs = await runNotificationLoop(env, sess);
     } catch (e) {
       await logVMError(env, "scheduledHandler", e.message);
       results.error = e.message;
@@ -1211,6 +1239,353 @@ fetch('/api/fr-sessions', { headers: { 'X-Auth': SECRET } })
 </html>`;
 }
 __name(renderDashboard, "renderDashboard");
+
+// ============================================
+// NOTIFICATION LOOP + BOT CALLOUT DETECTOR (v4.1)
+// ============================================
+var BOT_CALLOUT_PATTERNS = [
+  /\bthis\s+(is\s+)?(a\s+)?(chat)?bot\b/i,
+  /\bare\s+you\s+(a\s+)?(chat)?bot\b/i,
+  /\byou'?re\s+(a\s+)?(chat)?bot\b/i,
+  /\bdefinitely\s+a\s+bot\b/i,
+  /\banother\s+bot\b/i,
+  /\bobvious\s+bot\b/i,
+  /\bowner\s+of\s+the\s+account\b/i,
+  /\bautomate(d)?\s+(empathy|reply|response|care)/i,
+  /\bAI[-\s]+generated\b/i,
+  /\bnot\s+a\s+real\s+person\b/i,
+  /\btouching\s+grass\b/i,
+  /\bgenerated\s+by\s+AI\b/i,
+  /\bAI\s+slop\b/i,
+  /\bLLM\b.*\breply\b/i,
+  /\bChatGPT\b/i,
+  /\bblock(ed|ing)?\s+(you|this)\b.*\bbot\b/i,
+];
+function isBotCallout(text) {
+  if (!text) return { is_callout: false, score: 0 };
+  let score = 0;
+  const matches = [];
+  for (const p of BOT_CALLOUT_PATTERNS) {
+    if (p.test(text)) {
+      score++;
+      matches.push(p.source.slice(0, 30));
+    }
+  }
+  // Heuristic: any 1 match = callout. Tune later.
+  return { is_callout: score >= 1, score, matches };
+}
+__name(isBotCallout, "isBotCallout");
+
+function isThanksReply(text) {
+  if (!text) return false;
+  const t = text.toLowerCase().trim();
+  if (t.length > 80) return false;
+  const thanks_patterns = [/^thank\s*you/, /^thanks/, /^ty\b/, /^❤/, /^💕/, /^🙏/, /^appreciate/, /^that('s| is) (nice|kind|sweet|helpful)/];
+  return thanks_patterns.some(p => p.test(t));
+}
+__name(isThanksReply, "isThanksReply");
+
+async function sendTelegramAlert(env, htmlText) {
+  try {
+    if (!env.TG_BOT_TOKEN || !env.TG_CHAT_ID) return false;
+    const r = await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: env.TG_CHAT_ID, text: htmlText, parse_mode: "HTML", disable_web_page_preview: true })
+    });
+    return r.ok;
+  } catch (e) {
+    return false;
+  }
+}
+__name(sendTelegramAlert, "sendTelegramAlert");
+
+async function logCallout(env, data) {
+  try {
+    await env.DB.prepare(
+      "INSERT OR IGNORE INTO vibesmom_callouts (id, caller_handle, caller_did, post_uri, post_text, original_reply_uri, detected_at, matches, status) VALUES (?,?,?,?,?,?,?,?,?)"
+    ).bind(
+      data.id,
+      data.caller_handle,
+      data.caller_did,
+      data.post_uri,
+      data.post_text?.slice(0, 500) || "",
+      data.original_reply_uri || null,
+      new Date().toISOString(),
+      JSON.stringify(data.matches || []),
+      "flagged"
+    ).run();
+  } catch (e) {}
+}
+__name(logCallout, "logCallout");
+
+async function ensureNotifSchema(env) {
+  try {
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS vibesmom_callouts (
+      id TEXT PRIMARY KEY,
+      caller_handle TEXT,
+      caller_did TEXT,
+      post_uri TEXT,
+      post_text TEXT,
+      original_reply_uri TEXT,
+      detected_at TEXT,
+      matches TEXT,
+      status TEXT DEFAULT 'flagged',
+      pete_action TEXT,
+      pete_action_at TEXT
+    )`).run();
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS vibesmom_notif_state (
+      key TEXT PRIMARY KEY,
+      value TEXT,
+      updated_at TEXT
+    )`).run();
+  } catch (e) {}
+}
+__name(ensureNotifSchema, "ensureNotifSchema");
+
+async function composeFollowupReply(env, originalReply, theirReply, handle) {
+  const safeTheir = sanitizeForPrompt(theirReply, 280);
+  const safeOriginal = sanitizeForPrompt(originalReply, 200);
+  const safeHandle = String(handle || "friend").replace(/[^a-zA-Z0-9._-]/g, "").slice(0, 40);
+  const SYSTEM = `You are continuing a one-message-deep conversation as a warm, sharp, human Bluesky presence (Diane). You replied to someone earlier. They wrote back. Write ONE final short reply.
+
+RULES:
+- 1-2 sentences MAX. Under 220 characters.
+- Acknowledge what they specifically said this time.
+- NO stock phrases ("I've been there", "my sister", "I understand completely").
+- NO advice unless they directly asked for it.
+- A gentle question is fine if natural \u2014 but not required.
+- This is your LAST reply in this thread. Make it land softly.
+- Sound like a person who actually read what they wrote.
+- Use contractions. Real human rhythm.
+
+Output ONLY the reply text. No quotes.`;
+  const USER = `EARLIER YOU SAID: "${safeOriginal}"\n\nNOW @${safeHandle} REPLIED: "${safeTheir}"\n\nYour final short reply (under 220 chars):`;
+  try {
+    const res = await env.AI.run(LLAMA_FAST, { messages: [{ role: "system", content: SYSTEM }, { role: "user", content: USER }], max_tokens: 120, temperature: 0.8 });
+    let reply = (res?.response || "").trim().replace(/^["']|["']$/g, "");
+    if (!reply || jsLen(reply) > 240) throw new Error("Followup empty or too long");
+    return reply;
+  } catch (e) {
+    throw new Error(`Followup llama error: ${e.message}`);
+  }
+}
+__name(composeFollowupReply, "composeFollowupReply");
+
+async function runNotificationLoop(env, sess) {
+  await ensureNotifSchema(env);
+  const results = { fetched: 0, callouts: 0, followups: 0, thanks_liked: 0, skipped: 0, errors: 0 };
+  
+  // Fetch notifications
+  let notifs = [];
+  try {
+    const r = await fetch(`${BSKY_PDS}/xrpc/app.bsky.notification.listNotifications?limit=40`, {
+      headers: { "Authorization": `Bearer ${sess.token}` }
+    });
+    if (!r.ok) throw new Error(`listNotif: ${r.status}`);
+    const data = await r.json();
+    notifs = data.notifications || [];
+    results.fetched = notifs.length;
+  } catch (e) {
+    await logVMError(env, "notificationLoop_fetch", e.message);
+    return { ...results, error: e.message };
+  }
+  
+  // Get last-processed cursor (avoid reprocessing same notifs)
+  const lastProcessed = parseInt(await env.KV.get("notif_last_processed") || "0");
+  const newCutoff = Date.now() - (48 * 3600 * 1000); // never go back more than 48h
+  let maxSeen = lastProcessed;
+  
+  for (const n of notifs) {
+    const ts = new Date(n.indexedAt).getTime();
+    if (ts <= lastProcessed) continue;
+    if (ts < newCutoff) continue;
+    if (ts > maxSeen) maxSeen = ts;
+    
+    const reason = n.reason;
+    const author = n.author || {};
+    const handle = author.handle || "?";
+    const did = author.did || "";
+    const rec = n.record || {};
+    const text = (rec.text || "").trim();
+    const uri = n.uri || "";
+    
+    // Handle by reason type
+    if (reason === "reply" || reason === "mention" || reason === "quote") {
+      // Check bot-callout FIRST
+      const callout = isBotCallout(text);
+      if (callout.is_callout) {
+        results.callouts++;
+        const originalReplyUri = rec.reply?.parent?.uri || null;
+        await logCallout(env, {
+          id: `co-${ts}-${Math.random().toString(36).slice(2,6)}`,
+          caller_handle: handle,
+          caller_did: did,
+          post_uri: uri,
+          post_text: text,
+          original_reply_uri: originalReplyUri,
+          matches: callout.matches
+        });
+        // Alert Pete
+        const escTxt = text.replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c])).slice(0, 400);
+        const escHandle = handle.replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+        await sendTelegramAlert(env, `🚨 <b>VIBESMOM BOT-CALLOUT</b>\n\n<b>From:</b> @${escHandle}\n<b>Matches:</b> ${callout.matches.length}\n\n<b>What they said:</b>\n<i>${escTxt}</i>\n\n<a href="https://bsky.app/profile/${escHandle}/post/${uri.split('/').pop()}">View on Bluesky</a>\n\nReview at vibesmom-bsky.thom-rvr.workers.dev/admin/callouts`);
+        continue;
+      }
+      
+      // Thanks/heart → like the reply, no text response
+      if (isThanksReply(text)) {
+        const cid = n.cid;
+        if (cid && uri) {
+          try {
+            await likePost(sess, uri, cid);
+            results.thanks_liked++;
+          } catch (e) { results.errors++; }
+        }
+        continue;
+      }
+      
+      // Check if we've already replied to this thread (dedup)
+      const followedKey = await safeKvKey("followup", uri);
+      if (await env.KV.get(followedKey)) { results.skipped++; continue; }
+      
+      // Genuine human reply → compose 1 followup
+      if (reason === "reply" && text.length >= 8 && text.length < 600) {
+        try {
+          const originalReplyUri = rec.reply?.parent?.uri || "";
+          const rootUri = rec.reply?.root?.uri || originalReplyUri;
+          const rootCid = rec.reply?.root?.cid || "";
+          const parentCid = n.cid || "";
+          
+          // Fetch our original post text for context
+          let originalText = "";
+          if (originalReplyUri) {
+            try {
+              const pr = await fetch(`${BSKY_PUBLIC}/xrpc/app.bsky.feed.getPosts?uris=${encodeURIComponent(originalReplyUri)}`);
+              if (pr.ok) {
+                const pd = await pr.json();
+                originalText = pd.posts?.[0]?.record?.text || "";
+              }
+            } catch (_) {}
+          }
+          
+          const followup = await composeFollowupReply(env, originalText, text, handle);
+          
+          // Post the followup as a reply chained correctly
+          const facets = buildFacets(followup);
+          const replyRefs = {
+            root: { uri: rootUri, cid: rootCid },
+            parent: { uri: uri, cid: parentCid }
+          };
+          const pr = await fetch(`${BSKY_PDS}/xrpc/com.atproto.repo.createRecord`, {
+            method: "POST",
+            headers: { "Authorization": `Bearer ${sess.token}`, "Content-Type": "application/json" },
+            body: JSON.stringify({
+              repo: sess.did,
+              collection: "app.bsky.feed.post",
+              record: {
+                $type: "app.bsky.feed.post",
+                text: followup,
+                facets,
+                reply: replyRefs,
+                createdAt: new Date().toISOString()
+              }
+            })
+          });
+          if (!pr.ok) {
+            const err = await pr.text();
+            throw new Error(`followup post failed: ${pr.status} ${err.slice(0,150)}`);
+          }
+          await env.KV.put(followedKey, "1", { expirationTtl: 2592000 }); // 30 days
+          await logVMReply(env, {
+            id: `vm-fu-${ts}-${Math.random().toString(36).slice(2,5)}`,
+            post_uri: uri,
+            post_text: text,
+            reply_text: followup,
+            author_handle: handle,
+            status: "followup"
+          });
+          results.followups++;
+        } catch (e) {
+          await logVMError(env, `followup @${handle}`, e.message);
+          results.errors++;
+        }
+      } else {
+        results.skipped++;
+      }
+    }
+  }
+  
+  // Update cursor
+  if (maxSeen > lastProcessed) {
+    await env.KV.put("notif_last_processed", String(maxSeen));
+  }
+  
+  // Mark all notifs as seen on Bluesky
+  try {
+    await fetch(`${BSKY_PDS}/xrpc/app.bsky.notification.updateSeen`, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${sess.token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ seenAt: new Date().toISOString() })
+    });
+  } catch (_) {}
+  
+  return results;
+}
+__name(runNotificationLoop, "runNotificationLoop");
+
+async function renderCalloutsDashboard(env) {
+  await ensureNotifSchema(env);
+  const r = await env.DB.prepare("SELECT * FROM vibesmom_callouts ORDER BY detected_at DESC LIMIT 100").all();
+  const rows = r.results || [];
+  const rowsHtml = rows.map(c => {
+    const matches = (() => { try { return JSON.parse(c.matches || "[]"); } catch { return []; } })();
+    const esc = s => String(s||"").replace(/[<>&"]/g, ch => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[ch]));
+    const postId = (c.post_uri||"").split("/").pop();
+    const bskyUrl = `https://bsky.app/profile/${esc(c.caller_handle)}/post/${esc(postId)}`;
+    return `<tr class="${c.status==='resolved'?'resolved':''}">
+      <td>${esc(c.detected_at?.slice(0,16))}</td>
+      <td><a href="https://bsky.app/profile/${esc(c.caller_handle)}" target="_blank">@${esc(c.caller_handle)}</a></td>
+      <td class="text">${esc(c.post_text)}</td>
+      <td><code>${matches.length} hits</code></td>
+      <td><span class="status status-${esc(c.status)}">${esc(c.status)}</span></td>
+      <td><a href="${bskyUrl}" target="_blank">View →</a></td>
+    </tr>`;
+  }).join("");
+  return new Response(`<!doctype html><html><head><meta charset="utf-8"><title>VibesMom Callouts</title>
+<style>
+body{font-family:-apple-system,sans-serif;background:#0a0a0a;color:#e5e5e5;max-width:1400px;margin:24px auto;padding:0 20px}
+h1{color:#fbbf24}
+table{width:100%;border-collapse:collapse;background:#171717;border-radius:8px;overflow:hidden}
+th{background:#1f1f1f;color:#fbbf24;text-align:left;padding:12px;font-size:13px;text-transform:uppercase;letter-spacing:.5px}
+td{padding:12px;border-bottom:1px solid #262626;font-size:14px;vertical-align:top}
+tr:last-child td{border-bottom:none}
+tr.resolved{opacity:.4}
+.text{max-width:480px;color:#a3a3a3;line-height:1.5}
+code{background:#262626;padding:2px 8px;border-radius:4px;font-size:12px;color:#fbbf24}
+a{color:#60a5fa;text-decoration:none}
+a:hover{text-decoration:underline}
+.status{padding:3px 10px;border-radius:4px;font-size:11px;font-weight:600;text-transform:uppercase}
+.status-flagged{background:#7f1d1d;color:#fecaca}
+.status-resolved{background:#14532d;color:#bbf7d0}
+.status-ignored{background:#374151;color:#9ca3af}
+.summary{background:#171717;padding:16px 20px;border-radius:8px;margin-bottom:20px}
+.summary .num{font-size:32px;color:#fbbf24;font-weight:700}
+</style></head><body>
+<h1>🚨 VibesMom Bot-Callouts</h1>
+<div class="summary">
+  <div class="num">${rows.length}</div>
+  <div>total callouts logged · ${rows.filter(r=>r.status==='flagged').length} pending review</div>
+</div>
+<table>
+<thead><tr><th>When</th><th>From</th><th>What They Said</th><th>Match</th><th>Status</th><th>Link</th></tr></thead>
+<tbody>${rowsHtml || '<tr><td colspan="6" style="text-align:center;padding:40px;color:#737373">No callouts yet :)</td></tr>'}</tbody>
+</table>
+<p style="margin-top:20px;font-size:12px;color:#737373">VibesMom v4.1 · notification loop active</p>
+</body></html>`, { headers: { "Content-Type": "text/html" } });
+}
+__name(renderCalloutsDashboard, "renderCalloutsDashboard");
+
 var worker_default = {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -1338,7 +1713,19 @@ var worker_default = {
       const res = await env.AI.run(LLAMA_FAST, { messages: [{ role: "system", content: "Return a JSON array of 2 short greetings." }, { role: "user", content: 'Return exactly: ["hello","hi"]' }], max_tokens: 20 });
       return new Response(JSON.stringify({ ok: true, model: LLAMA_FAST, response: res }), { headers: { "Content-Type": "application/json" } });
     }
-    return new Response("VibesMom v4.0 \u2014 Unified :)", { status: 200 });
+    if (url.pathname === "/admin/callouts") {
+      return renderCalloutsDashboard(env);
+    }
+    if (url.pathname === "/run-notifs") {
+      try {
+        const sess = await getBskySession(env);
+        const r = await runNotificationLoop(env, sess);
+        return new Response(JSON.stringify(r), { headers: { "Content-Type": "application/json" } });
+      } catch (e) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 500, headers: { "Content-Type": "application/json" } });
+      }
+    }
+        return new Response("VibesMom v4.2 \u2014 LoveBomb Resilience + Notif Loop :)", { status: 200 });
   },
   async scheduled(event, env, ctx) {
     ctx.waitUntil(handleScheduled(env));
