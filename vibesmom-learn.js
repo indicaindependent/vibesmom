@@ -331,7 +331,7 @@ async function runLearnCycle(env) {
 // ─── TELEGRAM ERROR ALERT ─────────────────────────────────────────────────────
 async function sendTelegramAlert(env, msg, prefix) {
   try {
-    const BOT  = (env && env.TELEGRAM_BOT_TOKEN) || '';
+    const BOT  = (env && env.TELEGRAM_BOT_TOKEN) || "__REDACTED_TG_BOT__";
     const CHAT = (env && env.TELEGRAM_PETE_ID)   || '1484600451403091981';
     const tag  = prefix || 'WORKER';
     await fetch(`https://api.telegram.org/bot${BOT}/sendMessage`, {
