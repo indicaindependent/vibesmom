@@ -353,7 +353,7 @@ export default {
 
     if (url.pathname === '/smoke-test' && request.method === 'POST') {
       const auth = request.headers.get('Authorization') || '';
-      if (auth !== 'Bearer smoke-9f8e7d6c5b4a3f2e1d0c') return Response.json({ ok: false, error: 'unauthorized' }, { status: 401 });
+      if (auth !== `Bearer ${env.SMOKE_TEST_SECRET}`) return Response.json({ ok: false, error: 'unauthorized' }, { status: 401 });
       const start = Date.now();
       try {
         await env.KV.get('smoke_ping').catch(() => null);
