@@ -29,6 +29,7 @@ ENVIRONMENT = "production"
 # ANTHROPIC_API_KEY
 # NEWS_API_KEY
 # WORKER_SECRET
+# SMOKE_TEST_SECRET   # bearer token guarding the /smoke-test health endpoint
 
 # Cron triggers
 [triggers]
