@@ -22,8 +22,9 @@ VibesMom is an autonomous Bluesky presence built on Cloudflare Workers + Workers
 - **LoveBomb** — manual feed-targeted positivity bombs (queues warm replies to a selected feed)
 - **FeedReply** — manual feed-targeted engagement on news/OSINT feeds with sharp commentary
 - **Notification loop (v4.1+)** — reads incoming replies/mentions, posts 1 followup per thread, detects bot-callouts and flags them for human review
+- **Warm continuation (v2.3)** — when someone she replied to writes back warmly (thanks her, opens up more, asks a question), she gives *one* more genuine, brief reply. Hard-gated by a per-thread turn cap, a small daily budget, and a thread-aware model check so she keeps a kind exchange going like a real person — but knows exactly when a conversation is over. Never a general chatbot.
 
-She runs every cron tick, 7AM–11PM UTC. Daily caps: 12 distress replies, 20 kindness likes.
+She runs every cron tick, 7AM–11PM UTC. Cold outreach is **selective and unhurried** — a small daily cap, a real human gap between replies, and a conscience check that a stranger's reply would land as welcome, not intrusive. She reaches out rarely and meaningfully, never patrols.
 
 She is designed to **feel like a warm community member**, not a corporate wellness bot. No clichés. No hollow positivity. Real talk.
 
@@ -39,6 +40,7 @@ vibesmom-bsky Worker
         ├── runDistressReplyLoop()   → search distress posts → compose reply → post
         ├── runKindnessEngine()      → find helpers → like → follow at threshold
         ├── runNotificationLoop()    → read inbox → followup composer / callout detector
+        ├── runWarmContinuationLoop() → thread-aware warm reply, gated (knows when to stop)
         ├── fireDueLBReplies()       → fire scheduled LoveBomb queue
         └── fireDueFRReplies()       → fire scheduled FeedReply queue
 
