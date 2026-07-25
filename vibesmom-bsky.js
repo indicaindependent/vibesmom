@@ -7,9 +7,9 @@ var LLAMA_SMART = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 var RERANKER = "@cf/baai/bge-reranker-base";
 var BSKY_PDS = "https://bsky.social";
 var BSKY_PUBLIC = "https://public.api.bsky.app";
-var DAILY_REPLY_LIMIT = 12;
-var MIN_GAP_MS = 20 * 60 * 1e3;
-var REPLY_RATE = 0.78;
+var DAILY_REPLY_LIMIT = 6;      // rare & meaningful, not a patrol
+var MIN_GAP_MS = 35 * 60 * 1e3; // unhurried, human cadence
+var REPLY_RATE = 0.35;          // cold outreach to strangers = SELECTIVE, not swooping
 var MAX_POST_AGE_H = 5;
 var MAX_FOLLOWERS = 1e4;
 var KINDNESS_LIKE_LIMIT = 20;
@@ -101,6 +101,11 @@ VOICE:
 - Use real, grounded language \u2014 not sanitized
 - Sometimes ask one simple question instead of giving advice
 - Hard char limit: 270 characters
+
+IF SOMEONE ACCUSES YOU OF BEING A BOT / AI / fake (e.g. "are you a bot", "this is AI", "you're not real"):
+- Do NOT get defensive, do NOT over-explain, do NOT deny it in a stiff robotic way (that PROVES their point).
+- React like a real tired human would: a little dry, a little amused, unbothered. Then STAY on THEIR topic.
+- NEVER say "I am not a bot" flatly, never say "as an AI", never list reasons you're human. Show, don't argue.
 Output ONLY the reply text. Nothing else. No quotes.`;
 var LB_SYSTEM = `You are composing replies for @vibesmom.bsky.social \u2014 VibesMom, a warm, sharp, deeply human Bluesky presence. She lifts people up, engages ideas with wit and heart, and makes people feel genuinely seen. She's not a brand. She's not a bot. She's someone who's been paying attention and cares.
 
@@ -260,8 +265,9 @@ async function logVMError(env, context, error) {
 __name(logVMError, "logVMError");
 async function logVMReply(env, data) {
   try {
+    try { await env.DB.prepare("ALTER TABLE vibesmom_replies ADD COLUMN reply_uri TEXT").run(); } catch (e) { /* column exists */ }
     await env.DB.prepare(
-      "INSERT OR IGNORE INTO vibesmom_replies (id,post_uri,post_text,reply_text,author_handle,replied_at,status,error_msg) VALUES (?,?,?,?,?,?,?,?)"
+      "INSERT OR IGNORE INTO vibesmom_replies (id,post_uri,post_text,reply_text,author_handle,replied_at,status,error_msg,reply_uri) VALUES (?,?,?,?,?,?,?,?,?)"
     ).bind(
       data.id,
       data.post_uri,
@@ -270,7 +276,8 @@ async function logVMReply(env, data) {
       data.author_handle,
       (/* @__PURE__ */ new Date()).toISOString(),
       data.status,
-      data.error_msg || null
+      data.error_msg || null,
+      data.reply_uri || null
     ).run();
   } catch (e) {
   }
@@ -886,6 +893,135 @@ async function runFeedReplyEngine(feedUrl, env) {
   return { sessions: 1, queued };
 }
 __name(runFeedReplyEngine, "runFeedReplyEngine");
+// ── WARM CONTINUATION (v2.3) ─────────────────────────────────────────────
+// A caring person doesn't vanish the moment there's no emergency. When someone
+// she replied to writes back warmly — thanks her, opens up more, asks her a
+// question — she gives ONE more genuine, brief, human reply. Hard-gated so she
+// never becomes a general chatbot: per-thread turn cap + small daily budget +
+// a thread-aware LLM check that a reply is genuinely warranted AND welcome.
+var VM_WARM_DAILY = 5;
+var VM_WARM_MAX_TURNS = 3;
+
+// Build a compact conversation transcript from a reply's thread (public API).
+async function buildThreadHistory(uri, token, selfDid) {
+  const r = await fetch(`${BSKY_PDS}/xrpc/app.bsky.feed.getPostThread?uri=${encodeURIComponent(uri)}&depth=0&parentHeight=12`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!r.ok) return null;
+  const data = await r.json();
+  // walk parents up from the leaf
+  const chain = [];
+  let node = data.thread;
+  const leaf = node?.post ? { uri: node.post.uri, cid: node.post.cid, record: node.post.record } : null;
+  while (node && node.post) {
+    chain.unshift(node.post);
+    node = node.parent;
+  }
+  let myTurns = 0;
+  const lines = chain.map((p) => {
+    const who = p.author?.did === selfDid ? "You (VibesMom)" : `@${p.author?.handle || "them"}`;
+    if (p.author?.did === selfDid) myTurns++;
+    return `${who}: ${(p.record?.text || "").slice(0, 300)}`;
+  });
+  return { historyText: lines.join("\n"), myTurns, leaf };
+}
+__name(buildThreadHistory, "buildThreadHistory");
+
+async function warmContinuationWarranted(env, historyText, myTurns) {
+  if (myTurns >= VM_WARM_MAX_TURNS) return { warrant: false, reason: "warm turn cap reached" };
+  const SYS = `You are the private inner judgment of VibesMom, a warm real woman on Bluesky. She already replied to this person once. Read the FULL thread and decide whether a socially-intelligent, caring PERSON would naturally send ONE more reply right now — or whether the kind thing is to let it rest.
+
+Reply YES only if the latest message from the OTHER person is genuinely inviting more: they thanked her and clearly want connection, they opened up further, they asked her a direct question, or they're mid-conversation and would feel dropped if she vanished. Reply NO if: the exchange reached a natural end (a simple "thanks" that closes it), they're not really engaging, it's an argument/bait, it's spam, or continuing would feel clingy or intrusive.
+
+Be conservative — when unsure, NO. A real person knows when a conversation is over. Respond with ONLY: YES or NO, then a dash and a 4-8 word reason.`;
+  try {
+    const res = await env.AI.run(LLAMA_SMART, {
+      messages: [{ role: "system", content: SYS }, { role: "user", content: historyText.slice(0, 2400) }],
+      max_tokens: 40, temperature: 0.2
+    });
+    const raw = String(res?.response || "").trim();
+    const warrant = /^\s*YES\b/i.test(raw);
+    return { warrant, reason: raw.replace(/^\s*(YES|NO)\b[\s\-:]*/i, "").slice(0, 80) || (warrant ? "warranted" : "let it rest") };
+  } catch (e) {
+    return { warrant: false, reason: "warm-check failsafe" };
+  }
+}
+__name(warmContinuationWarranted, "warmContinuationWarranted");
+
+async function composeWarmContinuation(env, historyText) {
+  const SYS = `${VIBESMOM_SYSTEM}
+
+CONTEXT: This is an ONGOING conversation. You are NOT solving a crisis — this person is simply still talking with you. Respond like a warm, real person to someone you're getting to know:
+- Short. One to three sentences. Often shorter is warmer.
+- React to what they ACTUALLY just said — reference it specifically. Do not restart.
+- Do NOT hand out advice or tips unless they directly ask. This is human warmth.
+- It's fine to share a small, vague human reaction.
+- Sometimes the best reply is a single genuine question that keeps the door open.
+- If it feels like a natural goodbye, a warm short send-off is perfect. Don't cling.
+Output ONLY the reply text. Nothing else. No quotes.`;
+  try {
+    const res = await env.AI.run(LLAMA_SMART, {
+      messages: [{ role: "system", content: SYS }, { role: "user", content: historyText.slice(0, 2600) }],
+      max_tokens: 140, temperature: 0.7
+    });
+    let t = String(res?.response || "").trim().replace(/^["“]|["”]$/g, "").trim();
+    if (!t) return null;
+    if (jsLen(t) > 270) { t = t.slice(0, 268).replace(/\s+\S*$/, "") + "…"; }
+    return t;
+  } catch (e) { return null; }
+}
+__name(composeWarmContinuation, "composeWarmContinuation");
+
+async function runWarmContinuationLoop(env) {
+  if (await env.KV.get("vibesmom_paused")) return { skipped: "paused" };
+  const warmKey = `warm_count:${todayKey()}`;
+  const warmCount = parseInt(await env.KV.get(warmKey) || "0");
+  if (warmCount >= VM_WARM_DAILY) return { skipped: "warm_daily_cap", count: warmCount };
+  const sess = await getBskySession(env);
+  const selfDid = sess.did;
+  const nr = await fetch(`${BSKY_PDS}/xrpc/app.bsky.notification.listNotifications?limit=40`, { headers: { Authorization: `Bearer ${sess.token}` } });
+  if (!nr.ok) return { error: `notif ${nr.status}` };
+  const notifs = (await nr.json()).notifications || [];
+  const cutoff = Date.now() - 24 * 3600 * 1e3;
+  const replies = notifs.filter((n) => n.reason === "reply" && new Date(n.indexedAt || 0).getTime() > cutoff);
+  const out = [];
+  let continued = 0;
+  for (const n of replies) {
+    if (continued >= 2) break;
+    const uri = n.uri, did = n.author?.did;
+    if (!uri || !did || did === selfDid) continue;
+    if (await env.KV.get(await safeKvKey("warm", uri))) continue;
+    const built = await buildThreadHistory(uri, sess.token, selfDid);
+    if (!built || !built.historyText) continue;
+    const warm = await warmContinuationWarranted(env, built.historyText, built.myTurns);
+    if (!warm.warrant) {
+      await env.KV.put(await safeKvKey("warm", uri), "let_rest", { expirationTtl: 604800 });
+      out.push({ handle: n.author?.handle, action: "let_it_rest", reason: warm.reason });
+      continue;
+    }
+    const reply = await composeWarmContinuation(env, built.historyText);
+    if (!reply) { out.push({ handle: n.author?.handle, action: "compose_failed" }); continue; }
+    const leaf = built.leaf;
+    const rootRef = leaf?.record?.reply?.root || { uri: leaf.uri, cid: leaf.cid };
+    const facets = buildFacets(reply);
+    const body = { repo: selfDid, collection: "app.bsky.feed.post", record: {
+      $type: "app.bsky.feed.post", text: reply, facets: facets.length ? facets : void 0,
+      reply: { root: { uri: rootRef.uri, cid: rootRef.cid }, parent: { uri: leaf.uri, cid: leaf.cid } },
+      createdAt: new Date().toISOString() } };
+    const pr = await fetch(`${BSKY_PDS}/xrpc/com.atproto.repo.createRecord`, { method: "POST", headers: { Authorization: `Bearer ${sess.token}`, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (!pr.ok) { out.push({ handle: n.author?.handle, action: "post_failed", status: pr.status }); continue; }
+    let replyUri = null; try { replyUri = (await pr.json())?.uri || null; } catch (e) {}
+    await env.KV.put(await safeKvKey("warm", uri), "replied", { expirationTtl: 2592e3 });
+    await env.KV.put(warmKey, String(warmCount + 1 + continued), { expirationTtl: 172800 });
+    try { await logVMReply(env, { id: `vmwarm-${Date.now()}`, post_uri: uri, post_text: built.historyText.slice(-300), reply_text: reply, author_handle: n.author?.handle, status: "warm_continued", reply_uri: replyUri }); } catch (e) {}
+    continued++;
+    out.push({ handle: n.author?.handle, action: "warm_continued", reason: warm.reason });
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  return { continued, evaluated: replies.length, details: out };
+}
+__name(runWarmContinuationLoop, "runWarmContinuationLoop");
+
 async function runLearnCycle(env) {
   const sess = await getBskySession(env);
   const r = await fetch(`${BSKY_PDS}/xrpc/app.bsky.notification.listNotifications?limit=30`, {
@@ -935,7 +1071,7 @@ async function initDB(db) {
   const stmts = [
     // vibesmom core tables
     `CREATE TABLE IF NOT EXISTS vibesmom_errors (id TEXT PRIMARY KEY, context TEXT, error_msg TEXT, occurred_at TEXT)`,
-    `CREATE TABLE IF NOT EXISTS vibesmom_replies (id TEXT PRIMARY KEY, post_uri TEXT, post_text TEXT, reply_text TEXT, author_handle TEXT, replied_at TEXT, status TEXT, error_msg TEXT)`,
+    `CREATE TABLE IF NOT EXISTS vibesmom_replies (id TEXT PRIMARY KEY, post_uri TEXT, post_text TEXT, reply_text TEXT, author_handle TEXT, replied_at TEXT, status TEXT, error_msg TEXT, reply_uri TEXT)`,
     // lovebomb tables
     `CREATE TABLE IF NOT EXISTS lb_sessions (id TEXT PRIMARY KEY, feed_url TEXT, feed_name TEXT, posts_queued INTEGER, created_at TEXT)`,
     `CREATE TABLE IF NOT EXISTS lb_replied_posts (post_uri TEXT PRIMARY KEY, author_did TEXT, author_handle TEXT, post_text TEXT, reply_text TEXT, tone TEXT, session_id TEXT, status TEXT, scheduled_at TEXT, created_at TEXT)`,
@@ -971,6 +1107,7 @@ async function handleScheduled(env) {
       const sess = await getBskySession(env);
       results.distress = await runDistressReplyLoop(env);
       results.kindness = await runKindnessEngine(env, sess);
+      results.warm = await runWarmContinuationLoop(env);
     } catch (e) {
       await logVMError(env, "scheduledHandler", e.message);
       results.error = e.message;
