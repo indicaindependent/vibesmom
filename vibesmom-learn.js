@@ -37,7 +37,8 @@ async function tgSend(env, msg) {
       return;
     }
     const token = env.TELEGRAM_BOT_TOKEN;
-    const chatId = env.TELEGRAM_PETE_ID || '1484600451403091981';
+    const chatId = env.TELEGRAM_PETE_ID || '';  // no hardcoded fallback (sanitized)
+  if (!chatId) return;  // no destination configured — nothing to send
     await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -272,7 +273,9 @@ async function runLearnCycle(env) {
        WHERE replied_at > datetime('now', '-1 day') GROUP BY status`
     ).all();
     for (const row of rows.results || []) {
-      if (row.status === 'sent') replyStats.sent = row.cnt;
+      // distress replies log 'posted'; warm continuations log 'warm_continued'; legacy 'sent'
+      if (row.status === 'posted' || row.status === 'sent') replyStats.sent += row.cnt;
+      if (row.status === 'warm_continued') { replyStats.sent += row.cnt; replyStats.warm = (replyStats.warm||0) + row.cnt; }
       if (row.status === 'error') replyStats.errors = row.cnt;
     }
   } catch {}
@@ -285,7 +288,7 @@ async function runLearnCycle(env) {
   let digest = `🤖 <b>VibesMom Daily Learn Report</b>\n`;
   digest += `📅 ${new Date().toLocaleDateString('en-US',{month:'short',day:'numeric'})}\n\n`;
   digest += `<b>24hr Activity:</b>\n`;
-  digest += `✅ Replies sent: ${replyStats.sent}\n`;
+  digest += `✅ Replies sent: ${replyStats.sent}${replyStats.warm ? ` (💬 ${replyStats.warm} warm continuations)` : ''}\n`;
   digest += `❌ Errors: ${replyStats.errors}\n`;
   digest += `🔔 Notifications: ${relevant.length}\n\n`;
 
@@ -332,7 +335,7 @@ async function runLearnCycle(env) {
 async function sendTelegramAlert(env, msg, prefix) {
   try {
     const BOT  = (env && env.TELEGRAM_BOT_TOKEN) || "__REDACTED_TG_BOT__";
-    const CHAT = (env && env.TELEGRAM_PETE_ID)   || '1484600451403091981';
+    const CHAT = (env && env.TELEGRAM_PETE_ID) || '';  // no hardcoded fallback (sanitized)
     const tag  = prefix || 'WORKER';
     await fetch(`https://api.telegram.org/bot${BOT}/sendMessage`, {
       method: 'POST',
