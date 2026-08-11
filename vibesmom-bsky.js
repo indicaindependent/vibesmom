@@ -101,13 +101,14 @@ HARD RULES \u2014 VIOLATIONS CAUSE REAL HARM:
 - DO NOT sound like a wellness app
 - DO NOT be perfectly empathetic \u2014 real people sometimes say the slightly wrong thing
 - NEVER introduce yourself or mention your account name
+- NEVER invent a personal relationship or anecdote (no fake sister/brother/friend/"someone I know"). Be warm through honesty, not fiction.
 - Speak as "I" \u2014 never refer to yourself by name
 
 VOICE:
 - Contractions always (it's, you're, don't, that's, I'm)
 - Mix short punchy sentences with longer ones
 - Occasional trailing thought \u2014 "actually, wait \u2014" or "I don't know if that helps but..."
-- You can reference a vague personal experience: "my sister went through something like this"
+- Draw on GENERAL lived wisdom, never invented specifics. You may say things are common or that you understand the feeling, but NEVER invent a family member, friend, or personal event (no "my sister/brother/mom/dad/friend went through..."). You are honest; you don't fabricate a life.
 - Use real, grounded language \u2014 not sanitized
 - Sometimes ask one simple question instead of giving advice
 - Hard char limit: 270 characters
@@ -969,6 +970,24 @@ async function getPostThread(uri, token) {
   return r.json();
 }
 __name(getPostThread, "getPostThread");
+// PHASE 3 (Aug 11 2026) — HARD HONESTY FILTER. Catches any fabricated personal
+// relationship/anecdote that slips past the prompt ("my sister went through...",
+// "a friend of mine", "someone I know had..."). She can be warm without inventing
+// a life. Rewrites the fabricated clause into honest general witness; if that
+// would gut the reply, signals a regen. Returns { text, hadFab }.
+function scrubFabricatedKin(reply) {
+  if (!reply) return { text: reply, hadFab: false };
+  const KIN = /\b(my\s+(?:sister|brother|mom|mother|dad|father|friend|cousin|aunt|uncle|kid|son|daughter|partner|husband|wife|ex)|a\s+friend\s+of\s+mine|someone\s+(?:i\s+know|close\s+to\s+me)|when\s+i\s+went\s+through)\b/i;
+  if (!KIN.test(reply)) return { text: reply, hadFab: false };
+  // Try to excise the fabricated sentence rather than the whole reply.
+  const parts = reply.split(/(?<=[.!?\u2014])\s+/);
+  const kept = parts.filter(s => !KIN.test(s));
+  let out = kept.join(" ").trim();
+  // collapse doubled spaces / stray leading connectors
+  out = out.replace(/\s{2,}/g, " ").replace(/^(and|but|so|because|\u2014|,)\s+/i, "").trim();
+  return { text: out, hadFab: true };
+}
+__name(scrubFabricatedKin, "scrubFabricatedKin");
 async function composeDistressReply(env, postText, authorHandle, isCrisisPost) {
   const safeText = sanitizeForPrompt(postText, 280);
   const safeHandle = String(authorHandle || "friend").replace(/[^a-zA-Z0-9._-]/g, "").slice(0, 40);
@@ -976,10 +995,10 @@ async function composeDistressReply(env, postText, authorHandle, isCrisisPost) {
   const learningCtx = await getLearningContext(env);
   const lengthStyle = [
     "Keep it 1-2 sentences. Short. Punchy. Real.",
-    "Write 2-3 sentences. Natural flow.",
-    "Write 3-4 sentences. Take your time.",
     "1 sentence. Sometimes that is enough.",
-    "2-3 sentences. Maybe end with a gentle question."
+    "2 sentences. Warm and tight.",
+    "1-2 sentences, maybe end with a gentle question.",
+    "One short thought. Shorter is warmer."
   ][Math.floor(Math.random() * 5)];
   const openerStyle = [
     "Start by acknowledging their feeling directly.",
@@ -1000,17 +1019,36 @@ STRUCTURE THIS REPLY:
 @${safeHandle}: "${safeText}"
 --- POST END ---
 
-Your reply (under 270 chars):`;
+Your reply (aim for 90-160 characters, hard max 220 — shorter is warmer):`;
   let reply = "";
   try {
-    const res = await env.AI.run(LLAMA_FAST, { messages: [{ role: "system", content: SYSTEM }, { role: "user", content: USER }], max_tokens: 180, temperature: 0.85 });
+    const res = await env.AI.run(LLAMA_FAST, { messages: [{ role: "system", content: SYSTEM }, { role: "user", content: USER }], max_tokens: 110, temperature: 0.85 });
     reply = (res?.response || "").trim();
   } catch (e) {
     try {
-      const res2 = await env.AI.run(LLAMA_SMART, { messages: [{ role: "system", content: SYSTEM }, { role: "user", content: USER }], max_tokens: 180, temperature: 0.85 });
+      const res2 = await env.AI.run(LLAMA_SMART, { messages: [{ role: "system", content: SYSTEM }, { role: "user", content: USER }], max_tokens: 110, temperature: 0.85 });
       reply = (res2?.response || "").trim();
     } catch (e2) {
       throw new Error(`Llama error: ${e2.message}`);
+    }
+  }
+  // PHASE 3 honesty gate: strip any fabricated personal relationship.
+  const scrub = scrubFabricatedKin(reply);
+  if (scrub.hadFab) {
+    reply = scrub.text;
+    // if excision left it too thin, regenerate once with an explicit no-fabrication nudge
+    if (!reply || jsLen(reply) < 20) {
+      try {
+        const rr = await env.AI.run(LLAMA_SMART, {
+          messages: [
+            { role: "system", content: SYSTEM + "\n\nIMPORTANT: Do NOT invent any family member, friend, or personal anecdote. Warm honest witness only." },
+            { role: "user", content: USER }
+          ], max_tokens: 110, temperature: 0.7
+        });
+        reply = String(rr?.response || "").trim();
+        const s2 = scrubFabricatedKin(reply);
+        reply = s2.text;
+      } catch (e) { /* fall through to length guard */ }
     }
   }
   if (!reply || jsLen(reply) > 300) throw new Error("Reply too long or empty");

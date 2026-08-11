@@ -44,3 +44,18 @@ Cron: daily hour-3 UTC via scheduled() handler (auto-runs new code).
 2 semantic dedupe+decay (partly shipped w/ P1) · 3 length+honesty guardrails ·
 4 self-model fidelity + monthly reflection digest · 5 A/B the conscience gate.
 Priority: 1 -> 3 -> 2 -> 4 -> 5. All edge/free/CF-AI, no Anthropic.
+
+## PHASE 3 — LENGTH & HONESTY GUARDRAILS (DEPLOYED Aug 11 2026)
+Fixes W3 (bloat) + W4 (fabricated "my sister" tic). Three changes to vibesmom-bsky.js:
+1. Removed the prompt line that TOLD her to fabricate ("you can reference my sister went
+   through this") -> replaced with an explicit anti-fabrication rule + a HARD RULE against
+   inventing any relationship. Fixes all composers (shared VIBESMOM_SYSTEM).
+2. Retuned composeDistressReply lengthStyle toward her 90-160 char high-engagement band
+   (dropped "3-4 sentences / take your time"); USER target -> "aim 90-160, hard max 220";
+   max_tokens 180 -> 110.
+3. Added scrubFabricatedKin() HARD post-process filter: excises any invented kin/anecdote
+   that slips past the prompt, regenerates once if excision leaves the reply too thin.
+   Unit-tested: catches "my sister/friend of mine/someone I know/when I went through",
+   leaves clean replies (incl. "my heart goes out") untouched.
+LIVE PROOF (5 composes via temp /p3-check, since removed): lengths 95/99/103/110/120,
+zero fabricated_kin, warmth intact. Bindings preserved, temp route cleaned up.
