@@ -220,111 +220,100 @@ async function kvIntegrityCheck(env) {
 }
 
 async function runLearnCycle(env) {
-  await kvIntegrityCheck(env);
   const sess = await getBskySession(env);
-  const notifs = await fetchNotifications(sess.token, 50);
-
-  // Only process reply/mention/quote types from last 24h
-  const cutoff = Date.now() - 24 * 3600 * 1000;
-  const relevant = notifs.filter(n => {
-    if (!['reply','mention','quote'].includes(n.reason)) return false;
-    const t = new Date(n.indexedAt || 0).getTime();
-    return t > cutoff;
-  });
-
-  console.log(`Found ${relevant.length} relevant notifications in last 24h`);
-
-  // Quick classify pass first (no Claude — just keyword)
-  const quickStats = { ai: 0, positive: 0, block: 0, neutral: 0 };
-  for (const n of relevant) {
-    const text = (n.record?.text || '').toLowerCase();
-    if (CRITICISM_KEYWORDS.some(k => text.includes(k))) quickStats.ai++;
-    else if (POSITIVE_KEYWORDS.some(k => text.includes(k))) quickStats.positive++;
-    else if (BLOCK_SIGNALS.some(k => text.includes(k))) quickStats.block++;
-    else quickStats.neutral++;
+  const DID = sess.did;
+  const feedRes = await fetch(
+    `${BSKY_PDS}/xrpc/app.bsky.feed.getAuthorFeed?actor=${DID}&filter=posts_with_replies&limit=100`,
+    { headers: { Authorization: `Bearer ${sess.token}` } }
+  );
+  if (!feedRes.ok) return { error: `AuthorFeed ${feedRes.status}` };
+  const feed = (await feedRes.json()).feed || [];
+  const mine = [];
+  for (const it of feed) {
+    const p = it.post, rec = p?.record;
+    if (!rec?.reply) continue;
+    const parentUri = rec.reply.parent?.uri || "";
+    if (parentUri.includes(DID)) continue;
+    const ageH = (Date.now() - new Date(rec.createdAt).getTime()) / 3.6e6;
+    if (ageH < 6) continue;
+    if (ageH > 24 * 20) continue;
+    mine.push({
+      text: rec.text || "",
+      likes: p.likeCount || 0,
+      replies: p.replyCount || 0,
+      reposts: p.repostCount || 0,
+      parentUri,
+      uri: p.uri,
+    });
   }
-
-  // Deep classify only actionable ones (criticism + positive) — save Claude calls
-  const toClassify = relevant.filter(n => {
-    const text = (n.record?.text || '').toLowerCase();
-    return CRITICISM_KEYWORDS.some(k => text.includes(k)) ||
-           POSITIVE_KEYWORDS.some(k => text.includes(k)) ||
-           BLOCK_SIGNALS.some(k => text.includes(k));
-  });
-
-  const allClassified = [];
-  for (const notif of toClassify.slice(0, 12)) { // max 12 Claude calls per cycle
-    const text = notif.record?.text || '';
-    const classification = await classifyNotification(env, notif);
-    allClassified.push({ text, author: notif.author?.handle, classification });
-    // Small delay between Claude calls
-    await new Promise(r => setTimeout(r, 300));
+  if (mine.length < 8) return { skipped: "not_enough_graded_replies", n: mine.length };
+  const label = (r) => {
+    if (r.replies >= 1 || r.likes >= 2 || r.reposts >= 1) return "WON";
+    if (r.likes === 0 && r.replies === 0) return "LOST";
+    return "NEUTRAL";
+  };
+  const won = mine.filter(r => label(r) === "WON");
+  const lost = mine.filter(r => label(r) === "LOST");
+  const wonRate = mine.length ? won.length / mine.length : 0;
+  if (won.length < 2 || lost.length < 2) {
+    await env.KV.put("VIBESMOM_LAST_WINRATE", JSON.stringify({
+      at: new Date().toISOString(), n: mine.length, won: won.length, lost: lost.length, wonRate,
+    }));
+    return { skipped: "insufficient_signal", n: mine.length, won: won.length, lost: lost.length };
   }
-
-  // Update KV and D1
-  const { avoid, working } = await updateKvPatterns(env, allClassified);
-  await saveLessons(env, allClassified);
-
-  // Also check reply stats from D1
-  let replyStats = { sent: 0, errors: 0 };
-  try {
-    const rows = await env.DB.prepare(
-      `SELECT status, COUNT(*) as cnt FROM vibesmom_replies
-       WHERE replied_at > datetime('now', '-1 day') GROUP BY status`
-    ).all();
-    for (const row of rows.results || []) {
-      // distress replies log 'posted'; warm continuations log 'warm_continued'; legacy 'sent'
-      if (row.status === 'posted' || row.status === 'sent') replyStats.sent += row.cnt;
-      if (row.status === 'warm_continued') { replyStats.sent += row.cnt; replyStats.warm = (replyStats.warm||0) + row.cnt; }
-      if (row.status === 'error') replyStats.errors = row.cnt;
+  const fmt = (arr) => arr.slice(0, 12).map((r, i) =>
+    `${i + 1}. [likes ${r.likes} replies ${r.replies}] "${(r.text || "").replace(/\s+/g, " ").slice(0, 200)}"`
+  ).join("\n");
+  const sys =
+    "You study a warm support bot's own replies on Bluesky, labeled by REAL outcome. " +
+    "WARM replies earned a human reply-back or likes. FLAT replies were ignored (zero engagement). " +
+    "Contrast them. Identify 2-3 concrete things the WARM replies DID that the FLAT ones did not " +
+    "(structure, length, specificity, question style, whether they named the person's agency, tone), " +
+    "and 1-2 concrete things the FLAT replies did to AVOID. Be specific and behavioral, not generic. " +
+    'Return ONLY JSON: { "working": string[], "avoid": string[] }';
+  const user =
+    `WARM replies (earned connection):\n${fmt(won)}\n\n` +
+    `FLAT replies (ignored):\n${fmt(lost)}`;
+  const res = await env.AI.run(LLAMA_SMART, {
+    messages: [{ role: "system", content: sys }, { role: "user", content: user }],
+    max_tokens: 400, temperature: 0.4,
+  });
+  let parsed;
+  try { parsed = JSON.parse(repairSmartQuotes(stripJsonFences((res?.response || "").trim()))); }
+  catch (e) { return { error: "parse_fail: " + e.message }; }
+  const cleanArr = (v) => Array.isArray(v)
+    ? v.filter(x => typeof x === "string" && x.trim().length >= 12 && x.trim().length <= 400).map(x => x.trim())
+    : [];
+  const toks = (s) => new Set(s.toLowerCase().split(/\W+/).filter(w => w.length > 3));
+  const tooSimilar = (a, b) => {
+    const A = toks(a), B = toks(b); if (!A.size || !B.size) return false;
+    let o = 0; for (const w of A) if (B.has(w)) o++;
+    return o / Math.min(A.size, B.size) >= 0.6;
+  };
+  const mergeDedupe = (existing, incoming, cap) => {
+    const out = [...existing];
+    for (const cand of incoming) {
+      if (!out.some(e => tooSimilar(e, cand))) out.push(cand);
     }
-  } catch {}
-
-  // Build Telegram digest
-  const criticisms = allClassified.filter(c => c.classification &&
-    ['CRITICISM_AI','CRITICISM_CONTENT','CRITICISM_REPETITIVE','BLOCK_SIGNAL'].includes(c.classification.type));
-  const positives = allClassified.filter(c => c.classification?.type === 'POSITIVE');
-
-  let digest = `🤖 <b>VibesMom Daily Learn Report</b>\n`;
-  digest += `📅 ${new Date().toLocaleDateString('en-US',{month:'short',day:'numeric'})}\n\n`;
-  digest += `<b>24hr Activity:</b>\n`;
-  digest += `✅ Replies sent: ${replyStats.sent}${replyStats.warm ? ` (💬 ${replyStats.warm} warm continuations)` : ''}\n`;
-  digest += `❌ Errors: ${replyStats.errors}\n`;
-  digest += `🔔 Notifications: ${relevant.length}\n\n`;
-
-  digest += `<b>Engagement Breakdown:</b>\n`;
-  digest += `🚨 AI/Bot complaints: ${quickStats.ai}\n`;
-  digest += `💕 Positive reactions: ${quickStats.positive}\n`;
-  digest += `⛔ Block signals: ${quickStats.block}\n\n`;
-
-  if (criticisms.length > 0) {
-    digest += `<b>What to fix:</b>\n`;
-    criticisms.slice(0, 4).forEach(c => {
-      digest += `• ${c.classification.extracted_lesson || c.text?.slice(0,80)}\n`;
-    });
-    digest += '\n';
-  }
-
-  if (positives.length > 0) {
-    digest += `<b>What's working:</b>\n`;
-    positives.slice(0, 3).forEach(c => {
-      digest += `• ${c.classification.extracted_lesson || 'Positive engagement'}\n`;
-    });
-    digest += '\n';
-  }
-
-  digest += `<b>Active avoid patterns:</b> ${avoid.length}\n`;
-  digest += `<b>Active working patterns:</b> ${working.length}`;
-
-  await tgSend(env, digest);
-
+    return out.slice(-cap);
+  };
+  const newWorking = cleanArr(parsed.working);
+  const newAvoid = cleanArr(parsed.avoid);
+  const exW = cleanArr(JSON.parse(await env.KV.get("VIBESMOM_WORKING_PATTERNS") || "[]"));
+  const exA = cleanArr(JSON.parse(await env.KV.get("VIBESMOM_AVOID_PATTERNS") || "[]"));
+  const mW = mergeDedupe(exW, newWorking, 6);
+  const mA = mergeDedupe(exA, newAvoid, 8);
+  await env.KV.put("VIBESMOM_WORKING_PATTERNS", JSON.stringify(mW));
+  await env.KV.put("VIBESMOM_AVOID_PATTERNS", JSON.stringify(mA));
+  await env.KV.put("VIBESMOM_LAST_WINRATE", JSON.stringify({
+    at: new Date().toISOString(), n: mine.length, won: won.length, lost: lost.length,
+    wonRate: Math.round(wonRate * 100) / 100,
+  }));
   return {
-    notifications_processed: relevant.length,
-    classified: allClassified.length,
-    avoid_patterns: avoid.length,
-    working_patterns: working.length,
-    reply_stats: replyStats,
-    quick_stats: quickStats
+    outcome_aware: true,
+    graded: mine.length, won: won.length, lost: lost.length, wonRate: Math.round(wonRate * 100) / 100,
+    learned: { working_new: newWorking.length, avoid_new: newAvoid.length,
+               working_total: mW.length, avoid_total: mA.length },
   };
 }
 
