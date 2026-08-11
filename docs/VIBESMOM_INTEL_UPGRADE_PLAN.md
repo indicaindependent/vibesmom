@@ -59,3 +59,33 @@ Fixes W3 (bloat) + W4 (fabricated "my sister" tic). Three changes to vibesmom-bs
    leaves clean replies (incl. "my heart goes out") untouched.
 LIVE PROOF (5 composes via temp /p3-check, since removed): lengths 95/99/103/110/120,
 zero fabricated_kin, warmth intact. Bindings preserved, temp route cleaned up.
+
+## PHASE 2 — PATTERN DECAY (DEPLOYED Aug 11 2026)
+Semantic dedupe (0.6 token-overlap) already shipped with Phase 1. Added the missing DECAY:
+a VIBESMOM_PATTERN_META KV sidecar {pattern: {firstSeen,lastConfirmed}} stamps every pattern
+the model re-surfaces each cycle; any working/avoid pattern unconfirmed for 30d is evicted so
+the set stays fresh instead of ossifying at cap. Meta is pruned to live patterns (bounded).
+runLearnCycle now returns decayed_evicted. Composer still reads plain string arrays (no format change).
+
+## PHASE 4 — SELF-MODEL FIDELITY + MONTHLY DIGEST (DEPLOYED Aug 11 2026)
+4a: composeDistressReply gets an occasional (~25%) grounding nudge honoring her own self-model
+   ("despair lives in the nervous system") to reverse the 9%->2% body-grounding regression.
+   Never forced — only when it fits.
+4b: runMonthlyDigest() — measures ~30d of her own replies (avg length, ends-on-question,
+   agency-naming, body-grounding, "do you have someone", win-rate, likes/reply), diffs vs the
+   prior month, and sends a formatted HTML digest to Pete's Telegram. Self-gates once/month via
+   VIBESMOM_DIGEST_MONTH; stores VIBESMOM_DIGEST_PREV as next baseline. Zero Anthropic.
+   Wired into the hour-3 UTC cron right after the learn cycle.
+
+## PHASE 5 — CONSCIENCE-GATE AUDIT (DEPLOYED Aug 11 2026)
+logGateDecision() logs every replyWouldBeWelcome YES/NO to VIBESMOM_GATE_AUDIT (monthly yes/no
+tally + last-25 skipped-post snippets) so false-skips can be reviewed and the WELCOME threshold
+tuned with data. Best-effort, never blocks the decision.
+
+## NEW READ-ONLY ENDPOINT
+GET /insights (X-Auth gated) returns win_rate, working/avoid patterns, pattern_meta_count,
+gate_audit, last_digest, digest_month_sent — one call to see her whole learning state.
+
+## STATUS: ALL 5 PHASES SHIPPED. VibesMom now learns from real outcomes (P1), stays honest +
+tight (P3), keeps her lessons fresh (P2), honors her own identity + reports monthly (P4), and
+audits her own silence/reply gate (P5). Fully autonomous, edge/free, zero Anthropic.

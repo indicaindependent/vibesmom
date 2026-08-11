@@ -1008,8 +1008,12 @@ async function composeDistressReply(env, postText, authorHandle, isCrisisPost) {
     "Start with a short fragment sentence then expand."
   ][Math.floor(Math.random() * 5)];
   const tipLine = Math.random() > 0.35 ? `If it fits naturally, you might mention: "${tip}" \u2014 ONLY if it feels right.` : "Skip any physical tip this time. Just presence and warmth.";
+  // PHASE 4a: self-model fidelity — honor 'despair lives in the nervous system' occasionally.
+  const groundingNudge = Math.random() < 0.25
+    ? "\nIf it lands naturally, gently bring them back into their body for a second (a breath, their feet, unclenching their shoulders) — you believe despair lives in the nervous system. Only if it fits; never force it."
+    : "";
   const crisisLine = isCrisisPost ? '- CRISIS: work in "988" (Suicide & Crisis Lifeline) naturally, not robotically\n' : "";
-  const SYSTEM = VIBESMOM_SYSTEM + "\n\n" + crisisLine + tipLine + "\n\n" + learningCtx + `
+  const SYSTEM = VIBESMOM_SYSTEM + "\n\n" + crisisLine + tipLine + groundingNudge + "\n\n" + learningCtx + `
 
 STRUCTURE THIS REPLY:
 - ${openerStyle}
@@ -1066,10 +1070,30 @@ async function replyWouldBeWelcome(env, text, isCrisisPost) {
     const usr = `Post: "${sanitizeForPrompt(text, 280)}"\n\nWould an unsolicited supportive reply from a stranger be genuinely welcome here? YES or NO:`;
     const res = await env.AI.run(LLAMA_SMART, { messages:[{role:"system",content:sys},{role:"user",content:usr}], max_tokens: 4, temperature: 0.1 });
     const a = (res?.response || "").trim().toUpperCase();
-    return a.startsWith("YES");
+    const decision = a.startsWith("YES");
+    // PHASE 5 (Aug 11 2026) — audit the conscience gate. Log YES/NO tallies + a small
+    // sample of skipped posts so false-skips (missed someone who wanted support) can be
+    // reviewed later. Best-effort, never blocks the decision.
+    try { await logGateDecision(env, decision, text); } catch (e) {}
+    return decision;
   } catch (e) { return false; } // fail closed
 }
 __name(replyWouldBeWelcome, "replyWouldBeWelcome");
+
+// PHASE 5: rolling conscience-gate audit log in KV (monthly tally + last-25 NO sample).
+async function logGateDecision(env, decision, text) {
+  const monthKey = new Date().toISOString().slice(0, 7);
+  let g;
+  try { g = JSON.parse(await env.KV.get("VIBESMOM_GATE_AUDIT") || "null"); } catch (e) { g = null; }
+  if (!g || g.month !== monthKey) g = { month: monthKey, yes: 0, no: 0, recent_no: [] };
+  if (decision) g.yes++; else {
+    g.no++;
+    g.recent_no.unshift({ at: new Date().toISOString(), snippet: String(text || "").replace(/\s+/g, " ").slice(0, 120) });
+    g.recent_no = g.recent_no.slice(0, 25);
+  }
+  await env.KV.put("VIBESMOM_GATE_AUDIT", JSON.stringify(g));
+}
+__name(logGateDecision, "logGateDecision");
 
 async function runDistressReplyLoop(env) {
   const sess = await getBskySession(env);
@@ -1485,10 +1509,36 @@ async function runLearnCycle(env) {
   const newAvoid = cleanArr(parsed.avoid);
   const exW = cleanArr(JSON.parse(await env.KV.get("VIBESMOM_WORKING_PATTERNS") || "[]"));
   const exA = cleanArr(JSON.parse(await env.KV.get("VIBESMOM_AVOID_PATTERNS") || "[]"));
-  const mW = mergeDedupe(exW, newWorking, 6);
-  const mA = mergeDedupe(exA, newAvoid, 8);
+  // PHASE 2 (Aug 11 2026) — DECAY + FRESHNESS. Patterns carry a sidecar timestamp
+  // map so stale, unconfirmed lessons rotate out instead of ossifying at cap.
+  const NOW = Date.now();
+  const DECAY_MS = 30 * 24 * 60 * 60 * 1000; // 30 days unconfirmed -> evict
+  let meta = {};
+  try { meta = JSON.parse(await env.KV.get("VIBESMOM_PATTERN_META") || "{}") || {}; } catch (e) { meta = {}; }
+  // stamp: any pattern the model re-surfaced THIS cycle (new or re-confirmed existing)
+  const confirmedNow = new Set([...newWorking, ...newAvoid]);
+  const stamp = (p) => {
+    const prev = meta[p] || {};
+    meta[p] = { firstSeen: prev.firstSeen || NOW, lastConfirmed: confirmedNow.has(p) ? NOW : (prev.lastConfirmed || NOW) };
+  };
+  // fresh = confirmed within DECAY window (or brand new). unseen-for-30d -> drop.
+  const notStale = (p) => {
+    const m = meta[p]; if (!m) return true; // just added
+    return (NOW - (m.lastConfirmed || m.firstSeen || NOW)) < DECAY_MS;
+  };
+  let mW = mergeDedupe(exW, newWorking, 6);
+  let mA = mergeDedupe(exA, newAvoid, 8);
+  mW.forEach(stamp); mA.forEach(stamp);
+  const decayedW = mW.filter(notStale);
+  const decayedA = mA.filter(notStale);
+  const evicted = (mW.length - decayedW.length) + (mA.length - decayedA.length);
+  mW = decayedW; mA = decayedA;
+  // prune meta to only live patterns so the map can't grow unbounded
+  const live = new Set([...mW, ...mA]);
+  for (const k of Object.keys(meta)) if (!live.has(k)) delete meta[k];
   await env.KV.put("VIBESMOM_WORKING_PATTERNS", JSON.stringify(mW));
   await env.KV.put("VIBESMOM_AVOID_PATTERNS", JSON.stringify(mA));
+  await env.KV.put("VIBESMOM_PATTERN_META", JSON.stringify(meta));
   await env.KV.put("VIBESMOM_LAST_WINRATE", JSON.stringify({
     at: new Date().toISOString(), n: mine.length, won: won.length, lost: lost.length,
     wonRate: Math.round(wonRate * 100) / 100,
@@ -1497,7 +1547,7 @@ async function runLearnCycle(env) {
     outcome_aware: true,
     graded: mine.length, won: won.length, lost: lost.length, wonRate: Math.round(wonRate * 100) / 100,
     learned: { working_new: newWorking.length, avoid_new: newAvoid.length,
-               working_total: mW.length, avoid_total: mA.length },
+               working_total: mW.length, avoid_total: mA.length, decayed_evicted: evicted },
   };
 }
 __name(runLearnCycle, "runLearnCycle");
@@ -1716,6 +1766,98 @@ async function runConversationLoop(env) {
 }
 __name(runConversationLoop, "runConversationLoop");
 
+// PHASE 4 (Aug 11 2026) — MONTHLY SELF-REFLECTION DIGEST -> Pete's Telegram.
+// Measures her CURRENT behavior over the last ~30d of her own replies, compares
+// to the prior month's snapshot, and reports how her voice/engagement shifted.
+// Fires once/month (stamped in KV). Zero Anthropic — pure measurement.
+async function runMonthlyDigest(env) {
+  const monthKey = new Date().toISOString().slice(0, 7); // YYYY-MM
+  const done = await env.KV.get("VIBESMOM_DIGEST_MONTH");
+  if (done === monthKey) return { skipped: "already_sent", month: monthKey };
+
+  const sess = await getBskySession(env);
+  const DID = sess.did;
+  const feedRes = await fetch(
+    `${BSKY_PDS}/xrpc/app.bsky.feed.getAuthorFeed?actor=${DID}&filter=posts_with_replies&limit=100`,
+    { headers: { Authorization: `Bearer ${sess.token}` } }
+  );
+  if (!feedRes.ok) return { error: `AuthorFeed ${feedRes.status}` };
+  const feed = (await feedRes.json()).feed || [];
+  const mine = [];
+  for (const it of feed) {
+    const p = it.post, rec = p?.record;
+    if (!rec?.reply) continue;
+    if ((rec.reply.parent?.uri || "").includes(DID)) continue; // skip self-threads
+    const ageD = (Date.now() - new Date(rec.createdAt).getTime()) / 8.64e7;
+    if (ageD > 35) continue;
+    mine.push({ text: rec.text || "", likes: p.likeCount || 0, replies: p.replyCount || 0, reposts: p.repostCount || 0 });
+  }
+  const n = mine.length;
+  if (n < 5) return { skipped: "not_enough_data", n };
+
+  const pct = (f) => Math.round((mine.filter(f).length / n) * 100);
+  const avgLen = Math.round(mine.reduce((s, r) => s + [...r.text].length, 0) / n);
+  const endsQ = pct(r => /\?\s*$/.test(r.text.trim()));
+  const agency = pct(r => /\b(you're|you are|you've|you have)\s+(doing|showing up|holding|carrying|trying|managing|keeping)/i.test(r.text) || /that (takes|took)\b/i.test(r.text));
+  const grounding = pct(r => /\b(breath|breathe|body|shoulders|chest|feet|drink|water|eat|sleep|rest)\b/i.test(r.text));
+  const someone = pct(r => /\b(someone|anyone|people)\b.*\b(with you|around you|in your (life|corner)|you can|to talk)/i.test(r.text) || /do you have (someone|anyone|people)/i.test(r.text));
+  const won = mine.filter(r => r.replies >= 1 || r.likes >= 2 || r.reposts >= 1).length;
+  const winRate = Math.round((won / n) * 100);
+  const totalLikes = mine.reduce((s, r) => s + r.likes, 0);
+  const likesPer = Math.round((totalLikes / n) * 100) / 100;
+
+  const cur = { avgLen, endsQ, agency, grounding, someone, winRate, likesPer, n, month: monthKey };
+  let prev = null;
+  try { prev = JSON.parse(await env.KV.get("VIBESMOM_DIGEST_PREV") || "null"); } catch (e) {}
+
+  const patW = JSON.parse(await env.KV.get("VIBESMOM_WORKING_PATTERNS") || "[]");
+  const patA = JSON.parse(await env.KV.get("VIBESMOM_AVOID_PATTERNS") || "[]");
+
+  const arrow = (now, was) => {
+    if (was == null) return "";
+    const d = now - was;
+    if (Math.abs(d) < 1) return " (\u2192 flat)";
+    return d > 0 ? ` (\u2191 +${d})` : ` (\u2193 ${d})`;
+  };
+  const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  let msg = `\u{1F7E3} <b>VibesMom \u2014 Monthly Self-Reflection</b>\n<i>${monthKey} \u00b7 ${n} of her own replies</i>\n\n`;
+  msg += `<b>Voice &amp; behavior</b>\n`;
+  msg += `\u2022 Avg length: <b>${avgLen}</b> chars${arrow(avgLen, prev?.avgLen)}\n`;
+  msg += `\u2022 Ends on a question: <b>${endsQ}%</b>${arrow(endsQ, prev?.endsQ)}\n`;
+  msg += `\u2022 Names their agency: <b>${agency}%</b>${arrow(agency, prev?.agency)}\n`;
+  msg += `\u2022 Body-grounding: <b>${grounding}%</b>${arrow(grounding, prev?.grounding)}\n`;
+  msg += `\u2022 "Do you have someone?": <b>${someone}%</b>${arrow(someone, prev?.someone)}\n\n`;
+  msg += `<b>Engagement</b>\n`;
+  msg += `\u2022 Win-rate (warm reply-back or \u22652 likes): <b>${winRate}%</b>${arrow(winRate, prev?.winRate)}\n`;
+  msg += `\u2022 Likes per reply: <b>${likesPer}</b>${prev?.likesPer != null ? ` (was ${prev.likesPer})` : ""}\n\n`;
+  msg += `<b>What she's leaning into</b>\n${patW.slice(0, 3).map(p => "\u2022 " + esc(p.slice(0, 90))).join("\n") || "\u2022 (none yet)"}\n\n`;
+  msg += `<b>What she's learned to avoid</b>\n${patA.slice(0, 3).map(p => "\u2022 " + esc(p.slice(0, 90))).join("\n") || "\u2022 (none yet)"}\n\n`;
+  // a plain-language read of the biggest shift
+  if (prev) {
+    const shifts = [
+      ["got " + (avgLen < prev.avgLen ? "tighter" : "wordier"), Math.abs(avgLen - prev.avgLen)],
+      ["grounds bodies " + (grounding >= prev.grounding ? "more" : "less"), Math.abs(grounding - prev.grounding)],
+      ["checks support networks " + (someone >= prev.someone ? "more" : "less"), Math.abs(someone - prev.someone)],
+    ].sort((a, b) => b[1] - a[1]);
+    msg += `<i>Biggest shift this month: she ${shifts[0][0]}.</i>`;
+  } else {
+    msg += `<i>First digest \u2014 this becomes the baseline for next month.</i>`;
+  }
+
+  try {
+    const tok = env.TELEGRAM_BOT_TOKEN, chat = env.TELEGRAM_PETE_ID || "1484600451403091981";
+    await fetch(`https://api.telegram.org/bot${tok}/sendMessage`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chat, text: msg, parse_mode: "HTML", disable_web_page_preview: true }),
+    });
+  } catch (e) { /* telegram best-effort */ }
+
+  await env.KV.put("VIBESMOM_DIGEST_PREV", JSON.stringify(cur));
+  await env.KV.put("VIBESMOM_DIGEST_MONTH", monthKey);
+  return { sent: true, month: monthKey, cur };
+}
+__name(runMonthlyDigest, "runMonthlyDigest");
 async function handleScheduled(env) {
   const hour = (/* @__PURE__ */ new Date()).getUTCHours();
   const results = {};
@@ -1724,6 +1866,12 @@ async function handleScheduled(env) {
       results.learn = await runLearnCycle(env);
     } catch (e) {
       await logVMError(env, "learnCycle", e.message);
+    }
+    // PHASE 4: monthly self-reflection digest (self-gates to once/month via KV stamp)
+    try {
+      results.digest = await runMonthlyDigest(env);
+    } catch (e) {
+      await logVMError(env, "monthlyDigest", e.message);
     }
   }
   if (hour >= 7 && hour <= 23) {
@@ -2493,6 +2641,20 @@ var worker_default = {
     if (url.pathname === "/ai-test") {
       const res = await env.AI.run(LLAMA_FAST, { messages: [{ role: "system", content: "Return a JSON array of 2 short greetings." }, { role: "user", content: 'Return exactly: ["hello","hi"]' }], max_tokens: 20 });
       return new Response(JSON.stringify({ ok: true, model: LLAMA_FAST, response: res }), { headers: { "Content-Type": "application/json" } });
+    }
+    if (url.pathname === "/insights") {
+      if (request.headers.get("X-Auth") !== env.VIBESMOM_SECRET) return new Response("Unauthorized",{status:401});
+      const g = async (k, d) => { try { return JSON.parse(await env.KV.get(k) || d); } catch(e){ return JSON.parse(d); } };
+      const out = {
+        win_rate: await g("VIBESMOM_LAST_WINRATE", "null"),
+        working_patterns: await g("VIBESMOM_WORKING_PATTERNS", "[]"),
+        avoid_patterns: await g("VIBESMOM_AVOID_PATTERNS", "[]"),
+        pattern_meta_count: Object.keys(await g("VIBESMOM_PATTERN_META", "{}")).length,
+        gate_audit: await g("VIBESMOM_GATE_AUDIT", "null"),
+        last_digest: await g("VIBESMOM_DIGEST_PREV", "null"),
+        digest_month_sent: await env.KV.get("VIBESMOM_DIGEST_MONTH"),
+      };
+      return new Response(JSON.stringify(out, null, 2), { headers:{"Content-Type":"application/json"} });
     }
     return new Response("VibesMom v4.0 \u2014 Unified :)", { status: 200 });
   },
