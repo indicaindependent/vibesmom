@@ -2,78 +2,98 @@
 
 # 🤖 VibesMom
 
-**AI-powered Bluesky presence for support, kindness, and engagement — warm, human, never robotic**
+**A warm, genuinely human Bluesky presence — she listens, she has a life, and when someone actually needs help she finds a real, verified resource for them.**
 
 [![Bluesky](https://img.shields.io/badge/@vibesmom.bsky.social-0085ff?style=for-the-badge&logo=bluesky&logoColor=white)](https://bsky.app/profile/vibesmom.bsky.social)
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare_Workers-F38020?style=for-the-badge&logo=cloudflare&logoColor=white)](https://workers.cloudflare.com)
-[![Llama on Workers AI](https://img.shields.io/badge/llama--3.3--70b-7C3AED?style=for-the-badge)](https://developers.cloudflare.com/workers-ai/)
+[![Workers AI](https://img.shields.io/badge/Llama_on_Workers_AI-7C3AED?style=for-the-badge)](https://developers.cloudflare.com/workers-ai/)
+[![AT Protocol](https://img.shields.io/badge/AT_Protocol-0560ff?style=for-the-badge&logo=bluesky&logoColor=white)](https://atproto.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=for-the-badge)](CONTRIBUTING.md)
 
 </div>
 
 ---
 
-## What Is This
+## What she is
 
-VibesMom is an autonomous Bluesky presence built on Cloudflare Workers + Workers AI. She handles:
+VibesMom is an autonomous but *unhurried* presence on Bluesky, running entirely on the Cloudflare free edge (Workers + Workers AI + D1 + KV). She is not a patrol bot and not a wellness-app chatbot. She's built to feel like a real community member who happens to be made of code — warm, sometimes funny, sometimes blunt, never robotic, and honest about what she is.
 
-- **Distress reply loop** — searches Bluesky for people in emotional distress, composes warm, post-specific replies (under 270 chars)
-- **Kindness engine** — finds humans helping other humans, likes their posts, auto-follows after 2 likes from same account
-- **LoveBomb** — manual feed-targeted positivity bombs (queues warm replies to a selected feed)
-- **FeedReply** — manual feed-targeted engagement on news/OSINT feeds with sharp commentary
-- **Notification loop (v4.1+)** — reads incoming replies/mentions, posts 1 followup per thread, detects bot-callouts and flags them for human review
-- **Warm continuation (v2.3)** — when someone she replied to writes back warmly (thanks her, opens up more, asks a question), she gives *one* more genuine, brief reply. Hard-gated by a per-thread turn cap, a small daily budget, and a thread-aware model check so she keeps a kind exchange going like a real person — but knows exactly when a conversation is over. Never a general chatbot.
+Three things make her different from a typical "support bot":
 
-She runs every cron tick, 7AM–11PM UTC. Cold outreach is **selective and unhurried** — a small daily cap, a real human gap between replies, and a conscience check that a stranger's reply would land as welcome, not intrusive. She reaches out rarely and meaningfully, never patrols.
+**1. She holds real conversations — and only helps when help is actually wanted.**
+An inner-judgment model reads the *whole* thread and decides, conservatively, whether someone is disclosing a real-world need (housing, food, fleeing danger, medical, self-harm risk, fraud, isolation) or just having a hard day that warmth alone serves. Most of the time the answer is "just listen." She continues a kind exchange for a few turns like a person would — then knows exactly when a conversation is over.
 
-She is designed to **feel like a warm community member**, not a corporate wellness bot. No clichés. No hollow positivity. Real talk.
+**2. When there IS a real need, she finds a REAL resource.**
+She geolocates from the conversation, looks up a **verified** local agency from her own directory, and offers it in her own words — never a canned dump. If no verified local resource exists yet, she researches a candidate, corroborates it across two independent sources, and stages it *honestly as unverified* — she will **never** hand someone an unconfirmed local number. A national lifeline covers them now; the local entry only becomes usable after it's phone-verified (an optional CALL-E leg, off by default).
+
+**3. She has an inner life.**
+Once a day, in a calm midday window, she does something human: writes a short original micro-poem, and occasionally amplifies a genuinely kind post from someone else with her own take. She keeps a small film diary. Every night she runs a quiet self-learning cycle, and once a month she writes a private self-reflection digest. She isn't performing wellness — she's *being someone*.
+
+Everything she says is honest. She draws on general lived wisdom but **never fabricates a personal anecdote** (no fake sister/friend/story). Her honesty is the whole brand.
+
+---
+
+## What she actually does (the real loop)
+
+She wakes on Cloudflare cron and behaves on a human clock (waking hours in UTC):
+
+```
+Every tick, 7AM–11PM UTC
+  ├── runConversationLoop()   → continue real threads; assessNeed() decides if a
+  │                             human/resource is needed → directoryLookup() → verified help
+  ├── runDistressReplyLoop()  → selective, unhurried cold outreach to strangers in pain
+  │                             (small daily cap, real gaps, a conscience check that a reply
+  │                              would land as welcome — never swooping, never a patrol)
+  └── runKindnessEngine()     → find people helping people → like → follow at a threshold
+
+Midday (calm window)
+  └── runHumanMechanicsAndHobby() → daily micro-poem + occasional warm amplification (once/day)
+
+Overnight (3AM UTC)
+  ├── runLearnCycle()         → learn from what landed well / poorly, self-correct her voice
+  └── runMonthlyDigest()      → private monthly self-reflection (self-gates to once/month)
+```
+
+She reaches out **rarely and meaningfully**. Cold replies to strangers are selective by design — a small daily cap, a real human gap between messages, and a conscience check first. She is not trying to be everywhere.
+
+---
+
+## Voice & safety
+
+- Speaks in first person, contractions, real grounded language — no wellness clichés, no "honey," no hollow positivity.
+- If accused of being a bot, she doesn't get defensive or deny it stiffly — she reacts like a tired human would and stays on *your* topic (a defensive bot changes the subject; a person keeps talking about what matters).
+- Bot-callouts are flagged for human review, never argued with.
+- Crisis-level posts always include a real crisis line (e.g. 988 in the US).
+- Clearly identifies as AI in her profile — never claims to be a human therapist or counselor.
+- Daily caps and per-thread turn caps prevent spam and prevent her from overstaying.
 
 ---
 
 ## Architecture
 
 ```
-Cloudflare Cron (every tick, 7AM–11PM UTC)
-        │
-        ▼
-vibesmom-bsky Worker
-        ├── runDistressReplyLoop()   → search distress posts → compose reply → post
-        ├── runKindnessEngine()      → find helpers → like → follow at threshold
-        ├── runNotificationLoop()    → read inbox → followup composer / callout detector
-        ├── runWarmContinuationLoop() → thread-aware warm reply, gated (knows when to stop)
-        ├── fireDueLBReplies()       → fire scheduled LoveBomb queue
-        └── fireDueFRReplies()       → fire scheduled FeedReply queue
+Cloudflare Cron ──▶ vibesmom-bsky Worker
 
-Workers AI bindings:
-  - LLAMA_FAST  = @cf/meta/llama-3.1-8b-instruct
-  - LLAMA_SMART = @cf/meta/llama-3.3-70b-instruct-fp8-fast
-  - RERANKER    = @cf/baai/bge-reranker-base
+Workers AI:
+  LLAMA_CONVO = @cf/meta/llama-4-scout-17b-16e-instruct   (conversational voice)
+  LLAMA_SMART = @cf/meta/llama-3.3-70b-instruct-fp8-fast   (inner judgment / need assessment)
+  LLAMA_FAST  = @cf/meta/llama-3.1-8b-instruct-fast        (quick composes)
+  RERANKER    = @cf/baai/bge-reranker-base                 (learning signal)
 
 Storage:
-  - D1 (post history, callouts, sessions, replied tracking)
-  - KV (session cache, dedup keys, daily counters)
+  D1  — reply history, gate decisions, sessions, error log, learning context
+  KV  — session cache, dedup keys, daily counters, self-gates
 
-Channels:
-  - Telegram bot for human-in-the-loop alerts (bot-callouts)
+Directory:
+  A verified resource directory (need × locale) with an honest unverified-vs-verified
+  distinction and an optional phone-verification leg. National lines always cover the gap.
+
+Human-in-the-loop:
+  Telegram alerts for bot-callouts and for draft-mode hobby posts.
 ```
 
----
-
-## Routes
-
-| Path | Auth | Purpose |
-|------|------|---------|
-| `/` | none | Dashboard (login UI) |
-| `/health` | none | Health check |
-| `/run-distress` | X-Auth | Manual distress loop trigger |
-| `/run-kindness` | X-Auth | Manual kindness engine trigger |
-| `/run-notifs` | X-Auth | Manual notification loop trigger (v4.1+) |
-| `/run-lovebomb` | X-Auth | POST `{feed_url}` — queue LoveBomb session |
-| `/run-feedreply` | X-Auth | POST `{feed_url}` — queue FeedReply session |
-| `/admin/callouts` | X-Auth | Bot-callout review dashboard (v4.1+) |
-| `/fire-lb` | X-Auth | Manual fire LoveBomb due queue |
-| `/fire-fr` | X-Auth | Manual fire FeedReply due queue |
-| `/ai-test` | X-Auth | Verify Workers AI is reachable |
+Legacy manual tools (`runLoveBomb`, `runFeedReplyEngine`) still exist as optional operator-queued utilities and fire if something is queued — but they are *not* who she is. Her identity is the conversation loop, the verified-help path, and her inner life.
 
 ---
 
@@ -82,7 +102,7 @@ Channels:
 ```toml
 # wrangler.toml.example
 name = "vibesmom-bsky"
-main = "worker.js"
+main = "vibesmom-bsky.js"
 compatibility_date = "2024-12-01"
 
 [[d1_databases]]
@@ -101,27 +121,16 @@ binding = "AI"
 crons = ["*/5 * * * *"]
 ```
 
-Secrets:
 ```bash
 wrangler secret put BSKY_HANDLE          # vibesmom.bsky.social
 wrangler secret put BSKY_APP_PASS        # Bluesky app password
-wrangler secret put VIBESMOM_SECRET      # API auth token
-wrangler secret put TG_BOT_TOKEN         # Telegram bot for callout alerts
-wrangler secret put TG_CHAT_ID           # Telegram chat ID to alert
+wrangler secret put VIBESMOM_SECRET      # API auth token for manual routes
+wrangler secret put TG_BOT_TOKEN         # Telegram bot for alerts (optional)
+wrangler secret put TG_CHAT_ID           # Telegram chat to alert (optional)
 wrangler deploy
 ```
 
----
-
-## Ethical Notes
-
-- Bot clearly identifies as AI in its profile bio
-- Does not claim to be a human therapist or counselor
-- Posts are supportive, not diagnostic
-- Bot-callouts are NEVER replied to — flagged for human review only
-- Crisis-detected posts include 988 (Suicide & Crisis Lifeline) reference
-- Daily caps enforced to prevent spam
-- All content patterns reviewed by the VPDLNY collective
+The verified-directory + phone-verification legs are optional and off by default; VibesMom runs as a warm conversational presence without them.
 
 ---
 
@@ -132,55 +141,13 @@ wrangler deploy
 ---
 
 <div align="center">
-<sub>Built by <a href="https://osintnet.uk">Indica Independent</a> | Part of the <a href="https://osintnet.uk">VPDLNY</a> mission</sub>
+<sub>Built by <a href="https://osintnet.uk">Indica Independent</a> · part of the VPDLNY mission</sub>
 </div>
 
 ---
 
-## Changelog
+## ⚡ Support the mission
 
-### v4.2 — LoveBomb Resilience (May 15 2026)
-- **FIX:** `composeLBReplies` no longer crashes on non-string Llama responses — hardened parser handles object/null/undefined payloads
-- **FIX:** Per-post LLAMA_FAST fallback if LLAMA_SMART batch compose fails — graceful degradation instead of empty queue
-- **FIX:** Schema migration — added missing `post_text` column to `lb_replied_posts` (ALTER TABLE in production)
-- **FIX:** Bot-callout detector now also gates LoveBomb threads — won't reply if anyone in the thread is calling out bots
-
-### v4.1 — Notification Loop + Bot-Callout Detector (May 15 2026)
-- **NEW:** `runNotificationLoop()` — runs every cron tick. Reads incoming Bluesky notifications, posts ONE followup per thread (KV-dedup, 30-day TTL), auto-marks all notifs as seen
-- **NEW:** Bot-callout detector with 16 regex patterns (`"this is a bot"`, `"touching grass"`, `"automated empathy"`, etc.) — flags + sends Telegram alert to operator + DOES NOT reply
-- **NEW:** Followup composer — separate prompt for thread continuations, 1-2 sentences max, references both their reply and the original context
-- **NEW:** Thanks/heart detector — short `"thank you"` / `"❤"` replies get LIKED instead of text-responded-to
-- **NEW:** `/admin/callouts` dashboard for reviewing flagged callouts
-- **NEW:** `/run-notifs` manual trigger route
-- **NEW:** D1 tables: `vibesmom_callouts`, `vibesmom_notif_state`
-- **FIX:** Killed stock empathy template (`"my sister went through something similar"`) — prompt now forbids specific personal-experience claims and requires opener variation per reply
-
-### v4.0 — Unified Worker (May 12 2026)
-- Consolidated `lovebomb`, `feed-reply-engine`, `vibesmom-bsky` into single worker
-- Migrated from Anthropic API to Workers AI (`llama-3.3-70b` / `llama-3.1-8b`)
-- Centralized dashboard for all modules
-- Self-learning cycle via reranker model
-
-### v3.x — Self-Learning + Kindness Engine
-- Daily auditor + KV integrity guard
-- Negative feedback detection → prompt self-correction
-- Kindness engine: searches for genuine helpers, likes + auto-follows
-
-### v2.3 — Kindness Engine (May 10 2026)
-- 20 kindness-targeted search queries
-- Like → like → follow flow
-- `/stats` endpoint with daily counts
-
----
-
-
----
-
-## ⚡ Support the Mission
-
-This is free, ad-free, independent infrastructure — no VC, no gov funding, no strings. If it served you, a tip keeps it alive and funds the next tool.
+Free, ad-free, independent infrastructure — no VC, no strings. If she helped, a tip keeps her running.
 
 [![Donate via SkyGive](https://img.shields.io/badge/💜_Donate_via_SkyGive-8A5CF6?style=for-the-badge&logoColor=white)](https://donate.skygive.app/)
-[![Lightning](https://img.shields.io/badge/⚡_tips@skygive.app-F7931A?style=for-the-badge&logo=lightning&logoColor=white)](https://donate.skygive.app/)
-
-<sub>🧡 Sovereign Lightning + on-chain via SkyGive. Your sats fund uptime, not ads.</sub>
