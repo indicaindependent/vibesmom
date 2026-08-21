@@ -2,7 +2,7 @@
 
 # 🤖 VibesMom
 
-**A warm, genuinely human Bluesky presence — she listens, she has a life, and when someone actually needs help she finds a real, verified resource for them.**
+**An automated account with a warm, human voice — she listens, she has a life, and when someone actually needs help she finds a real, verified resource for them.**
 
 [![Bluesky](https://img.shields.io/badge/@vibesmom.bsky.social-0085ff?style=for-the-badge&logo=bluesky&logoColor=white)](https://bsky.app/profile/vibesmom.bsky.social)
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare_Workers-F38020?style=for-the-badge&logo=cloudflare&logoColor=white)](https://workers.cloudflare.com)
@@ -12,6 +12,27 @@
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=for-the-badge)](CONTRIBUTING.md)
 
 </div>
+
+---
+
+> ### She is a bot. Please read this first.
+>
+> VibesMom is an **automated account**. She is software, not a person, and not a
+> counsellor. No human reads incoming messages in real time, and she cannot
+> dispatch help or reach a human on your behalf.
+>
+> **If you are in crisis, contact a human service now.** In the US, call or text
+> **988** — the Suicide & Crisis Lifeline, free and confidential, 24/7. In
+> immediate danger, call **911**. Outside the US,
+> [findahelpline.com](https://findahelpline.com) lists verified services by
+> country.
+>
+> A companion chatbot **may not be suitable for some minors**, and may not be
+> suitable for some adults either.
+>
+> Our full **[crisis prevention protocol](docs/CRISIS-PROTOCOL.md)** is published —
+> what she detects, what she does about it, her known limitations, and what data
+> is kept. Outbound calling is **disabled** and has never been enabled.
 
 ---
 

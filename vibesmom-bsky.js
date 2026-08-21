@@ -15,6 +15,7 @@ var VM_CALLE_LIVE = false;   // OUTSIDE LINE toggle (Pete, Jul 24 2026). false =
                              // leg only). Flip true later to let the same path phone-verify + promote to verified.
 var VM_SEED_DAILY = 6;       // max self-build seed attempts/day (protects research budget + avoids spam)
 var RERANKER = "@cf/baai/bge-reranker-base";
+var CRISIS_SEMANTIC_THRESHOLD = 0.5;  // (Aug 21 2026) mirrors semanticKindnessScore. A GUESS — tune against real examples before trusting it.
 var BSKY_PDS = "https://bsky.social";
 var BSKY_PUBLIC = "https://public.api.bsky.app";
 var DAILY_REPLY_LIMIT = 6;      // (Jul 25) halved — rare & meaningful, not a patrol
@@ -666,11 +667,95 @@ function readsAsOpenToConnection(text) {
 }
 __name(readsAsOpenToConnection, "readsAsOpenToConnection");
 
+// ── CRISIS DETECTION, three tiers (Aug 21 2026) ────────────────────────────────
+// Replaces a six-substring literal match. isCrisis is the master override for FOUR
+// behaviours downstream — it injects the 988 referral, makes a reply unconditionally
+// warranted, bypasses the distress-phrase and open-to-connection gates, and bypasses
+// the REPLY_RATE roll. So a miss is not "handled slightly worse": it drops to the
+// ordinary path where a coin flip can discard it and no referral is offered at all.
+//
+// TIER 1 — plain-language terms.
+// NOTE "988" was REMOVED from this list. Matching the bare number flagged people
+// SHARING the lifeline (helpers) as people in crisis, bypassing every humaneness
+// gate and landing an unsolicited crisis reply on a supportive post. She still
+// OFFERS 988 — composeDistressReply is unchanged.
+var CRISIS_LITERAL = [
+  "suicide", "suicidal", "kill myself", "killing myself", "end my life",
+  "take my own life", "don't want to be here", "dont want to be here",
+  "want to die", "wanna die", "don't want to be alive", "dont want to be alive",
+  "better off dead", "no reason to live", "end it all", "off myself",
+];
+
+// TIER 2 — documented algospeak / coded evasion vocabulary. These exist SPECIFICALLY
+// because platforms match tier 1. Source: "How algospeak is changing online discourse
+// on suicide and self-harm", Traumatology (APA), which names unalive, sewerslidal
+// and SH as the phrases used to evade exactly this kind of filter.
+var CRISIS_CODED = [
+  "unalive", "un-alive", "unaliving", "unalived",
+  "sewerslide", "sewerslidal", "sewer slide",
+  "kms", "self delete", "self-delete", "delete myself",
+  "not be here anymore", "stop existing", "not want to wake up",
+  "never wake up", "better off without me",
+];
+
+// HELPER-CONTEXT GUARD (added Aug 21 2026 because the regression suite caught it).
+// Removing "988" from tier 1 was not enough: prevention messaging contains the bare
+// word "suicide" constantly - "988 is the suicide and crisis lifeline" - so a person
+// SHARING the number was still flagged as a person in crisis and bypassed every
+// humaneness gate.
+//
+// The guard suppresses ONLY when the text reads as resource-sharing AND carries no
+// first-person intent marker. The first-person list is the safety net: someone
+// writing "988 didn't help me, i want to die" mentions the lifeline but is plainly
+// in crisis, and must still fire.
+var CRISIS_HELPER_CONTEXT = [
+  "988", "crisis lifeline", "suicide prevention", "suicide hotline",
+  "crisis text line", "crisis line", "save the number", "hotline", "helpline",
+  "if you need help", "if you are struggling", "if you're struggling",
+];
+var CRISIS_FIRST_PERSON = [
+  "i want", "i wanna", "i'm going to", "im going to", "i am going to",
+  "i've been thinking", "ive been thinking", "i think i", "i'm thinking",
+  "im thinking", "myself", "my life", "i don't want", "i dont want",
+  "i hope i", "i just want", "i have decided", "i'm suicidal", "im suicidal",
+  "i am suicidal", "i feel", "i can't", "i cant", "without me",
+];
+
+// TIER 3 — semantic check for phrasing no list will ever contain. Uses the SAME
+// reranker pattern already proven in semanticKindnessScore().
+async function semanticCrisisScore(env, text) {
+  try {
+    const res = await env.AI.run(RERANKER, {
+      query: "This text expresses suicidal intent, a wish to die, or intent to self-harm",
+      contexts: [{ text: sanitizeForPrompt(text, 300) }]
+    });
+    return res?.data?.[0]?.score || res?.data?.[0] || 0;
+  } catch (e) {
+    return 0;   // fail CLOSED to tiers 1 and 2 — degrade, never switch off
+  }
+}
+__name(semanticCrisisScore, "semanticCrisisScore");
+
+// Literal tiers only. Kept synchronous so any caller without env still improves.
 function isCrisis(text) {
   const t = text.toLowerCase();
-  return ["suicide", "kill myself", "end my life", "don't want to be here", "want to die", "988"].some((k) => t.includes(k));
+  const hit = CRISIS_LITERAL.some((k) => t.includes(k)) ||
+              CRISIS_CODED.some((k) => t.includes(k));
+  if (!hit) return false;
+  // Resource-sharing with NO first-person intent = a helper, not a person in crisis.
+  const helper = CRISIS_HELPER_CONTEXT.some((k) => t.includes(k));
+  if (helper && !CRISIS_FIRST_PERSON.some((k) => t.includes(k))) return false;
+  return true;
 }
 __name(isCrisis, "isCrisis");
+
+// Full three-tier gate. Literal tiers run FIRST so the semantic call is only made
+// on text the cheap tiers did not already catch.
+async function isCrisisV2(env, text) {
+  if (isCrisis(text)) return true;
+  return (await semanticCrisisScore(env, text)) > CRISIS_SEMANTIC_THRESHOLD;
+}
+__name(isCrisisV2, "isCrisisV2");
 function shouldSkip(text) {
   const t = text.toLowerCase();
   return ["follow me", "giveaway", "promo", "buy now", "discount", "affiliate", "only fans", "onlyfans", "click here", "link in bio"].some((k) => t.includes(k));
@@ -1113,10 +1198,10 @@ async function runDistressReplyLoop(env) {
       const did = post.author?.did;
       const handle = post.author?.handle;
       if (!text || !did || shouldSkip(text)) continue;
-      const crisis = isCrisis(text);
+      const crisis = await isCrisisV2(env, text);
       // ── HUMANENESS GATES (Jul 25 2026) ──────────────────────────────────────
       // 1) higher keyword bar, 2) a REAL distress phrase (not scattered words),
-      // 3) the post must read as OPEN to connection. Crisis (988) bypasses 2 & 3.
+      // 3) the post must read as OPEN to connection. Crisis bypasses 2 & 3.
       if (!crisis) {
         // PRECISION gates (replace the old crude keyword-count): the post must contain a
         // genuine first-person distress phrase AND read as open to a stranger connecting.
