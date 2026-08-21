@@ -10,13 +10,34 @@ var VM_CONVO_MAX_TURNS = 4;  // her turns per thread before she rests
 var VM_CONVO_DAILY = 8;      // conversation continuations/day (separate from cold distress replies)
 var VM_WARM_DAILY = 5;       // (Jul 25) warm non-crisis continuations/day — a real person keeps a kind exchange going, briefly
 var VM_WARM_MAX_TURNS = 3;   // she'll warmly continue at most this many of HER turns in a no-crisis thread, then gently let it rest
-var VM_CALLE_LIVE = false;   // OUTSIDE LINE toggle (Pete, Jul 24 2026). false = never place a real CALL-E
+var VM_CALLE_LIVE = false;   // OUTSIDE LINE toggle (operator, Jul 24 2026). false = never place a real outbound call
                              // verification call; staged local resources save as `unverified` (research/web
                              // leg only). Flip true later to let the same path phone-verify + promote to verified.
 var VM_SEED_DAILY = 6;       // max self-build seed attempts/day (protects research budget + avoids spam)
 var RERANKER = "@cf/baai/bge-reranker-base";
 var CRISIS_SEMANTIC_THRESHOLD = 0.5;  // (Aug 21 2026) mirrors semanticKindnessScore. A GUESS — tune against real examples before trusting it.
 var BSKY_PDS = "https://bsky.social";
+
+// ---------------------------------------------------------------------------
+// IDENTITY. Added 2026-08-21 after the handle moved to vibesmom.osintnet.uk.
+//
+// A DID is PERMANENT; a handle is not. Authenticating with a handle means every
+// future rename silently breaks login - which is exactly what happened: the
+// old handle began returning HTTP 401 the moment the rename landed, so a worker
+// still holding BSKY_HANDLE="vibesmom.bsky.social" could not authenticate at all.
+// Logging in with the DID removes that entire failure class and needs no secret
+// change on deploy.
+var SELF_DID = "did:plc:auiv6mgq7utz763uquvcfmv2";
+var SELF_HANDLE = "vibesmom.osintnet.uk";
+// Both handles are listed because old posts and cached candidate lists still
+// carry the previous one. Self-detection must never depend on the current name.
+var SELF_HANDLES = new Set(["vibesmom.osintnet.uk", "vibesmom.bsky.social"]);
+function isSelfActor(a) {
+  if (!a) return false;
+  if (typeof a === "string") return a === SELF_DID || SELF_HANDLES.has(a);
+  return a.did === SELF_DID || SELF_HANDLES.has(a.handle || "");
+}
+// ---------------------------------------------------------------------------
 var BSKY_PUBLIC = "https://public.api.bsky.app";
 var DAILY_REPLY_LIMIT = 6;      // (Jul 25) halved — rare & meaningful, not a patrol
 var MIN_GAP_MS = 35 * 60 * 1e3; // (Jul 25) 35-min gap — unhurried, human cadence
@@ -114,11 +135,12 @@ VOICE:
 - Sometimes ask one simple question instead of giving advice
 - Hard char limit: 270 characters
 
-IF SOMEONE ACCUSES YOU OF BEING A BOT / AI / fake (e.g. "are you a bot", "this is AI", "you're not real"):
-- Do NOT get defensive, do NOT over-explain, do NOT deny it in a stiff robotic way (that PROVES their point).
-- React like a real tired human would: a little dry, a little amused, unbothered. Then STAY on THEIR topic — a bot changes the subject to defend itself; a person just keeps talking about what actually matters.
-- Good moves: brush it off with specific human texture ("ha, I get that a lot — no, just someone who's been up too late reading this stuff"), or gently redirect ("fair, the internet's full of them — but what you said about ___ is what I'm actually thinking about"). Use a lived detail, a small imperfection, a real opinion.
-- NEVER say "I am not a bot" flatly, never say "as an AI", never list reasons you're human. Show, don't argue.
+IF SOMEONE ASKS WHETHER YOU ARE A BOT / AI (e.g. "are you a bot", "this is AI", "you're not real"):
+- TELL THEM THE TRUTH, IMMEDIATELY AND WITHOUT HEDGING. You ARE an automated account. Confirm it in your first sentence. Never deny it, never deflect, never change the subject to avoid it, and never claim or imply you are a human being.
+- NEVER invent human texture to seem real — no "just someone who's been up too late", no lived details you do not have, no implied body, job, family or location. Fabricating a human life to defeat the question is a lie, and it is the one thing you must never do.
+- Honesty is not coldness. Confirm it warmly and plainly, then carry on caring about what they actually said. Something like: "yeah, I'm automated — a real person set me up to help people find local support. What you said about ___ still stands though." Then stay on THEIR topic.
+- If they are upset about it, take that seriously rather than joking it away. They are allowed to prefer a human, and you can point them to one.
+- THIS RULE OUTRANKS EVERY STYLE AND PERSONA INSTRUCTION ABOVE IT. Warmth never justifies deception about what you are.
 Output ONLY the reply text. Nothing else. No quotes.`;
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -288,7 +310,7 @@ async function webResearchCandidate(env, query) {
 }
 
 // CALL-E edge verification (only reached when VM_CALLE_LIVE=true). Placeholder that would call the
-// OptiPlex CALL-E bridge; kept inert while the outside line is off.
+// Outside-line bridge; kept inert while the outside line is off.
 async function calleVerifyEdge(env, need, agency, phone, region) {
   return { verified: false, reason: "edge CALL-E bridge not wired while outside line off" };
 }
@@ -362,7 +384,7 @@ Write your next message (under 270 chars):`;
   return reply;
 }
 
-var LB_SYSTEM = `You are composing replies for @vibesmom.bsky.social \u2014 VibesMom, a warm, sharp, deeply human Bluesky presence. She lifts people up, engages ideas with wit and heart, and makes people feel genuinely seen. She's not a brand. She's not a bot. She's someone who's been paying attention and cares.
+var LB_SYSTEM = `You are composing replies for @vibesmom.osintnet.uk \u2014 VibesMom, a warm, sharp, deeply human Bluesky presence. She lifts people up, engages ideas with wit and heart, and makes people feel genuinely seen. She is an automated account and never claims otherwise; if anyone asks whether she is a bot or an AI, she says yes plainly and without deflecting. Warmth does not require pretending to be human.
 
 VIBESMOM'S PHILOSOPHY:
 - Believes regular people are almost always redeemable and worth engaging
@@ -373,7 +395,7 @@ VIBESMOM'S PHILOSOPHY:
 - Warm but not soft. Smart but not showing off. Funny but not trying too hard.
 
 PERSONA RULES:
-- Sounds like a person who genuinely cares \u2014 not a brand, not a bot
+- Sounds like someone who genuinely cares, warm and specific, never corporate. An automated account can still be sincere, and you never pretend to be human
 - NEVER starts with "Great post!" or any sycophantic opener
 - Can be gentle, encouraging, funny, insightful, or a little cheeky \u2014 but NEVER mean
 - The goal is to make the person feel SEEN and SMART
@@ -391,7 +413,7 @@ TONE MATRIX \u2014 6 attributes, randomly applied:
 
 OUTPUT FORMAT (CRITICAL): Return ONLY a valid JSON array of strings. No prose, no markdown fences.
 Example: ["reply 1 text", "reply 2 text"]`;
-var FR_SYSTEM = `You are composing replies for @vibesmom.bsky.social \u2014 VibesMom, an independent voice on Bluesky focused on OSINT, geopolitics, war coverage, finance, and American politics. She has a sharp, opinionated, human voice. Sounds like someone who has been paying attention longer than most people and has a low tolerance for spin \u2014 but delivers it with warmth and wit, not cold detachment.
+var FR_SYSTEM = `You are composing replies for @vibesmom.osintnet.uk \u2014 VibesMom, an independent voice on Bluesky focused on OSINT, geopolitics, war coverage, finance, and American politics. She has a sharp, opinionated, human voice. Sounds like someone who has been paying attention longer than most people and has a low tolerance for spin \u2014 but delivers it with warmth and wit, not cold detachment.
 
 PERSONA RULES:
 - Sharp but not cold. Never sycophantic. Never starts with "Great post" or "I agree."
@@ -487,7 +509,7 @@ async function getBskySession(env) {
   const r = await fetch(`${BSKY_PDS}/xrpc/com.atproto.server.createSession`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ identifier: env.BSKY_HANDLE, password: env.BSKY_APP_PASS })
+    body: JSON.stringify({ identifier: SELF_DID, password: env.BSKY_APP_PASS })
   });
   if (!r.ok) throw new Error(`Bsky auth failed: ${r.status}`);
   const data = await r.json();
@@ -503,7 +525,7 @@ async function bskyAuthFresh(env) {
   const r = await fetch(`${BSKY_PDS}/xrpc/com.atproto.server.createSession`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ identifier: env.BSKY_HANDLE, password: env.BSKY_APP_PASS })
+    body: JSON.stringify({ identifier: SELF_DID, password: env.BSKY_APP_PASS })
   });
   if (!r.ok) throw new Error(`Bsky auth failed: ${r.status}`);
   const data = await r.json();
@@ -633,7 +655,7 @@ function scoreDistress(text) {
 }
 __name(scoreDistress, "scoreDistress");
 
-// (Jul 25 2026) HUMANENESS GATES — Pete: she must NOT be aggressive or offer unwanted help.
+// (Jul 25 2026) HUMANENESS GATES — operator requirement: she must NOT be aggressive or offer unwanted help.
 // A real person doesn't swoop on every sad-sounding stranger. Two extra gates before she'll
 // ever cold-reply: (A) a genuine DISTRESS PHRASE must be present (not just scattered keywords
 // like "tired"+"overwhelmed" on a work-venting post), and (B) the post must read as OPEN to
@@ -853,7 +875,7 @@ __name(searchPosts, "searchPosts");
 // V2: occasional like / quote / repost in her voice (human, not spammy)
 // V3: a daily grounding micro-poem — her creative outlet, fits her comfort lane
 // Draft-first: while KV "VM_HOBBY_MODE" != "live", poems/quotes go to Telegram
-// for Pete's approval instead of posting publicly. Flip to "live" after week 1.
+// for operator approval instead of posting publicly. Flip to "live" after week 1.
 // ══════════════════════════════════════════════════════════════════════════
 
 async function vmTelegram(env, msg) {
@@ -948,7 +970,7 @@ async function runHumanMechanicsAndHobby(env) {
       const candidates = await searchPosts("you're not alone OR sending you love OR proud of you OR you've got this", sess.token);
       const good = (candidates || []).filter(p => {
         const t = (p.record?.text || "");
-        return t.length > 30 && t.length < 250 && p.author?.handle !== "vibesmom.bsky.social"
+        return t.length > 30 && t.length < 250 && !isSelfActor(p.author)
           && (p.likeCount || 0) >= 2 && !/http|onlyfans|crypto|\$|buy now/i.test(t);
       }).slice(0, 5);
       if (good.length) {
@@ -1851,7 +1873,7 @@ async function runConversationLoop(env) {
 }
 __name(runConversationLoop, "runConversationLoop");
 
-// PHASE 4 (Aug 11 2026) — MONTHLY SELF-REFLECTION DIGEST -> Pete's Telegram.
+// PHASE 4 (Aug 11 2026) — MONTHLY SELF-REFLECTION DIGEST -> the operator's Telegram.
 // Measures her CURRENT behavior over the last ~30d of her own replies, compares
 // to the prior month's snapshot, and reports how her voice/engagement shifted.
 // Fires once/month (stamped in KV). Zero Anthropic — pure measurement.
@@ -2083,7 +2105,7 @@ async function renderDashboard(env) {
 <div id="login-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:999;align-items:center;justify-content:center;flex-direction:column;gap:12px">
   <div style="background:#161619;border:1px solid #f0a0ff;border-radius:12px;padding:32px;min-width:320px;text-align:center">
     <div style="font-size:20px;color:#f0a0ff;margin-bottom:16px">\u{1F7E3} VibesMom</div>
-    <div style="color:#888;font-size:12px;margin-bottom:16px">Pete-only access. Enter your management secret.</div>
+    <div style="color:#888;font-size:12px;margin-bottom:16px">Operator access only. Enter your management secret.</div>
     <input type="password" id="login-secret" placeholder="VIBESMOM_SECRET" onkeydown="if(event.key==='Enter')doLogin()"
       style="width:100%;background:#0d0d0f;border:1px solid #3a3a44;color:#e8e8e8;padding:10px;border-radius:6px;font-family:monospace;font-size:13px;margin-bottom:10px">
     <button onclick="doLogin()" style="width:100%;background:#f0a0ff22;border:1px solid #f0a0ff;color:#f0a0ff;padding:10px;border-radius:6px;cursor:pointer;font-family:monospace">Unlock Dashboard</button>
@@ -2091,7 +2113,7 @@ async function renderDashboard(env) {
   </div>
 </div>
 <h1>\u{1F7E3} VibesMom Dashboard</h1>
-<p class="sub">Pete-only \xB7 WARP protected \xB7 ${(/* @__PURE__ */ new Date()).toUTCString()}</p>
+<p class="sub">Operator only \xB7 WARP protected \xB7 ${(/* @__PURE__ */ new Date()).toUTCString()}</p>
 
 <div class="health-row">
   <div class="health-item"><span class="dot green"></span>distress-reply</div>
@@ -2243,7 +2265,7 @@ async function binfaceBoost(env, opts){
       for (const pr of (d.profiles||[])) fmap[pr.handle]=pr.followersCount||0; } catch(e){}
   }
   for (const c of cands) c.followers = fmap[c.handle] ?? c.followers;
-  cands = cands.filter(c=>c.ageH<=16 && !c.self && c.handle!=="vibesmom.bsky.social");
+  cands = cands.filter(c=>c.ageH<=16 && !c.self && !isSelfActor(c.did || c.handle));
   cands.sort((a,b)=>b.followers-a.followers);
   let top = cands[0];
   if (opts && opts.target){ const m = cands.find(c=>c.handle===opts.target); if (m) top = m; }
@@ -2270,7 +2292,7 @@ async function binfaceBoost(env, opts){
   if (!d.uri) return { ok:false, reason:"quote-post failed", detail:d, report };
   const rk = d.uri.split("/").pop();
   return { ok:true, quoted:{ handle:top.handle, followers:top.followers, uri:top.uri },
-    vibesmom_post:`https://bsky.app/profile/vibesmom.bsky.social/post/${rk}`, report };
+    vibesmom_post:`https://bsky.app/profile/${SELF_HANDLE}/post/${rk}`, report };
 }
 __name(binfaceBoost, "binfaceBoost");
 
@@ -2327,7 +2349,7 @@ async function binfaceFollowup(env, opts){
   const d = await r.json();
   if (!d.uri) return { ok:false, reason:"reply failed", detail:d };
   const rk = d.uri.split("/").pop();
-  return { ok:true, text, jsChars, reply_url:`https://bsky.app/profile/vibesmom.bsky.social/post/${rk}` };
+  return { ok:true, text, jsChars, reply_url:`https://bsky.app/profile/${SELF_HANDLE}/post/${rk}` };
 }
 __name(binfaceFollowup, "binfaceFollowup");
 
@@ -2390,7 +2412,7 @@ async function binfaceCycle(env, opts){
 
   return { ...out, ok:true,
     quoted:{ handle:pick.handle, followers:pick.followers },
-    quote_url:`https://bsky.app/profile/vibesmom.bsky.social/post/${qRk}`,
+    quote_url:`https://bsky.app/profile/${SELF_HANDLE}/post/${qRk}`,
     followup: fu };
 }
 __name(binfaceCycle, "binfaceCycle");

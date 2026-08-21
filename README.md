@@ -4,7 +4,7 @@
 
 **An automated account with a warm, human voice — she listens, she has a life, and when someone actually needs help she finds a real, verified resource for them.**
 
-[![Bluesky](https://img.shields.io/badge/@vibesmom.bsky.social-0085ff?style=for-the-badge&logo=bluesky&logoColor=white)](https://bsky.app/profile/vibesmom.bsky.social)
+[![Bluesky](https://img.shields.io/badge/@vibesmom.osintnet.uk-0085ff?style=for-the-badge&logo=bluesky&logoColor=white)](https://bsky.app/profile/vibesmom.osintnet.uk)
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare_Workers-F38020?style=for-the-badge&logo=cloudflare&logoColor=white)](https://workers.cloudflare.com)
 [![Workers AI](https://img.shields.io/badge/Llama_on_Workers_AI-7C3AED?style=for-the-badge)](https://developers.cloudflare.com/workers-ai/)
 [![AT Protocol](https://img.shields.io/badge/AT_Protocol-0560ff?style=for-the-badge&logo=bluesky&logoColor=white)](https://atproto.com)
@@ -143,7 +143,8 @@ crons = ["*/5 * * * *"]
 ```
 
 ```bash
-wrangler secret put BSKY_HANDLE          # vibesmom.bsky.social
+# BSKY_HANDLE is no longer used for login - the worker authenticates by DID,
+# which cannot change when the handle does. Safe to leave set or unset.
 wrangler secret put BSKY_APP_PASS        # Bluesky app password
 wrangler secret put VIBESMOM_SECRET      # API auth token for manual routes
 wrangler secret put TG_BOT_TOKEN         # Telegram bot for alerts (optional)

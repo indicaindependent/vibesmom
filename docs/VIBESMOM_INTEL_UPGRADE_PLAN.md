@@ -1,5 +1,5 @@
 # VibesMom — 42-Day Longitudinal Intelligence Analysis & Upgrade Plan
-Aug 11 2026 · analyst: Bumboclaat/ScrambleMeBot · account: vibesmom.bsky.social
+Aug 11 2026 · analyst: internal · account: vibesmom.osintnet.uk
 
 ## DATA BASELINE (432 stranger-replies, 3x14-day cohorts)
 | metric | C3 (28-42d, oldest) | C2 (14-28d) | C1 (last 14d, newest) | trend |
@@ -73,7 +73,7 @@ runLearnCycle now returns decayed_evicted. Composer still reads plain string arr
    Never forced — only when it fits.
 4b: runMonthlyDigest() — measures ~30d of her own replies (avg length, ends-on-question,
    agency-naming, body-grounding, "do you have someone", win-rate, likes/reply), diffs vs the
-   prior month, and sends a formatted HTML digest to Pete's Telegram. Self-gates once/month via
+   prior month, and sends a formatted HTML digest to the operator's Telegram. Self-gates once/month via
    VIBESMOM_DIGEST_MONTH; stores VIBESMOM_DIGEST_PREV as next baseline. Zero Anthropic.
    Wired into the hour-3 UTC cron right after the learn cycle.
 

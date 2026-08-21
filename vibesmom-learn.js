@@ -1,7 +1,7 @@
 // vibesmom-learn — Daily notification auditor + self-learning engine
 // Runs: once daily at 11PM ET (03:00 UTC)
 // Reads Bluesky notifications, classifies criticism, updates KV learning store,
-// sends Telegram digest to Pete
+// sends Telegram digest to the operator
 
 const AI_MODEL = '@cf/meta/llama-3.3-70b-instruct-fp8-fast';
 const BSKY_PDS      = 'https://bsky.social';
@@ -28,7 +28,7 @@ const BLOCK_SIGNALS = [
 
 async function tgSend(env, msg) {
   try {
-    // Suppress noisy Anthropic/Workers AI quota errors — Pete asked not to be paged
+    // Suppress noisy Anthropic/Workers AI quota errors — the operator asked not to be paged
     const msgStr = String(msg || '');
     if (msgStr.includes('credit balance') || msgStr.includes('credit_balance')
         || (msgStr.includes('failed') && (msgStr.includes('400') || msgStr.includes('402') || msgStr.includes('429')))

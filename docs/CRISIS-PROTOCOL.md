@@ -2,7 +2,7 @@
 
 **Operator:** Vulnerable Persons Defense League of New York (VPDLNY)
 **System:** VibesMom, an automated account on Bluesky operating as
-[@vibesmom.bsky.social](https://bsky.app/profile/vibesmom.bsky.social)
+[@vibesmom.osintnet.uk](https://bsky.app/profile/vibesmom.osintnet.uk)
 **Published:** 2026-08-21
 **Last reviewed:** 2026-08-21
 

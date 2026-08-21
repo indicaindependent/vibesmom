@@ -114,7 +114,7 @@ for (const t of CRISIS_MENTIONING_LIFELINE) {
 }
 
 // ---- ordinary sadness must NOT be crisis ----------------------------------
-// Crisis status bypasses the humaneness gates Pete asked for, so over-firing is a
+// Crisis status bypasses the humaneness gates the operator asked for, so over-firing is a
 // real harm too: it makes her swoop on people who did not invite it.
 const NOT_CRISIS = [
   "i'm so tired of this week",
