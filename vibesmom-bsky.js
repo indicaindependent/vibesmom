@@ -10,7 +10,7 @@ var VM_CONVO_MAX_TURNS = 4;  // her turns per thread before she rests
 var VM_CONVO_DAILY = 8;      // conversation continuations/day (separate from cold distress replies)
 var VM_WARM_DAILY = 5;       // (Jul 25) warm non-crisis continuations/day — a real person keeps a kind exchange going, briefly
 var VM_WARM_MAX_TURNS = 3;   // she'll warmly continue at most this many of HER turns in a no-crisis thread, then gently let it rest
-var VM_CALLE_LIVE = false;   // OUTSIDE LINE toggle (operator, Jul 24 2026). false = never place a real outbound call
+var VM_CALLE_LIVE = false;   // OUTSIDE LINE toggle (Pete, Jul 24 2026). false = never place a real outbound call
                              // verification call; staged local resources save as `unverified` (research/web
                              // leg only). Flip true later to let the same path phone-verify + promote to verified.
 var VM_SEED_DAILY = 6;       // max self-build seed attempts/day (protects research budget + avoids spam)
@@ -655,7 +655,7 @@ function scoreDistress(text) {
 }
 __name(scoreDistress, "scoreDistress");
 
-// (Jul 25 2026) HUMANENESS GATES — operator requirement: she must NOT be aggressive or offer unwanted help.
+// (Jul 25 2026) HUMANENESS GATES — Pete: she must NOT be aggressive or offer unwanted help.
 // A real person doesn't swoop on every sad-sounding stranger. Two extra gates before she'll
 // ever cold-reply: (A) a genuine DISTRESS PHRASE must be present (not just scattered keywords
 // like "tired"+"overwhelmed" on a work-venting post), and (B) the post must read as OPEN to
@@ -875,12 +875,12 @@ __name(searchPosts, "searchPosts");
 // V2: occasional like / quote / repost in her voice (human, not spammy)
 // V3: a daily grounding micro-poem — her creative outlet, fits her comfort lane
 // Draft-first: while KV "VM_HOBBY_MODE" != "live", poems/quotes go to Telegram
-// for operator approval instead of posting publicly. Flip to "live" after week 1.
+// for Pete's approval instead of posting publicly. Flip to "live" after week 1.
 // ══════════════════════════════════════════════════════════════════════════
 
 async function vmTelegram(env, msg) {
   try {
-    const tok = env.TELEGRAM_BOT_TOKEN, chat = env.TELEGRAM_PETE_ID || '1484600451403091981';
+    const tok = env.TELEGRAM_BOT_TOKEN, chat = env.TELEGRAM_PETE_ID || '';  // no hardcoded fallback (sanitized)
     if (!tok) return;
     await fetch(`https://api.telegram.org/bot${tok}/sendMessage`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1873,7 +1873,7 @@ async function runConversationLoop(env) {
 }
 __name(runConversationLoop, "runConversationLoop");
 
-// PHASE 4 (Aug 11 2026) — MONTHLY SELF-REFLECTION DIGEST -> the operator's Telegram.
+// PHASE 4 (Aug 11 2026) — MONTHLY SELF-REFLECTION DIGEST -> Pete's Telegram.
 // Measures her CURRENT behavior over the last ~30d of her own replies, compares
 // to the prior month's snapshot, and reports how her voice/engagement shifted.
 // Fires once/month (stamped in KV). Zero Anthropic — pure measurement.
@@ -1953,7 +1953,7 @@ async function runMonthlyDigest(env) {
   }
 
   try {
-    const tok = env.TELEGRAM_BOT_TOKEN, chat = env.TELEGRAM_PETE_ID || "1484600451403091981";
+    const tok = env.TELEGRAM_BOT_TOKEN, chat = env.TELEGRAM_PETE_ID || '';  // no hardcoded fallback (sanitized)
     await fetch(`https://api.telegram.org/bot${tok}/sendMessage`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chat_id: chat, text: msg, parse_mode: "HTML", disable_web_page_preview: true }),
@@ -2105,7 +2105,7 @@ async function renderDashboard(env) {
 <div id="login-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:999;align-items:center;justify-content:center;flex-direction:column;gap:12px">
   <div style="background:#161619;border:1px solid #f0a0ff;border-radius:12px;padding:32px;min-width:320px;text-align:center">
     <div style="font-size:20px;color:#f0a0ff;margin-bottom:16px">\u{1F7E3} VibesMom</div>
-    <div style="color:#888;font-size:12px;margin-bottom:16px">Operator access only. Enter your management secret.</div>
+    <div style="color:#888;font-size:12px;margin-bottom:16px">Pete-only access. Enter your management secret.</div>
     <input type="password" id="login-secret" placeholder="VIBESMOM_SECRET" onkeydown="if(event.key==='Enter')doLogin()"
       style="width:100%;background:#0d0d0f;border:1px solid #3a3a44;color:#e8e8e8;padding:10px;border-radius:6px;font-family:monospace;font-size:13px;margin-bottom:10px">
     <button onclick="doLogin()" style="width:100%;background:#f0a0ff22;border:1px solid #f0a0ff;color:#f0a0ff;padding:10px;border-radius:6px;cursor:pointer;font-family:monospace">Unlock Dashboard</button>
@@ -2113,7 +2113,7 @@ async function renderDashboard(env) {
   </div>
 </div>
 <h1>\u{1F7E3} VibesMom Dashboard</h1>
-<p class="sub">Operator only \xB7 WARP protected \xB7 ${(/* @__PURE__ */ new Date()).toUTCString()}</p>
+<p class="sub">Pete-only \xB7 WARP protected \xB7 ${(/* @__PURE__ */ new Date()).toUTCString()}</p>
 
 <div class="health-row">
   <div class="health-item"><span class="dot green"></span>distress-reply</div>

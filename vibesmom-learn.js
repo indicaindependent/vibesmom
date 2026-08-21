@@ -28,7 +28,7 @@ const BLOCK_SIGNALS = [
 
 async function tgSend(env, msg) {
   try {
-    // Suppress noisy Anthropic/Workers AI quota errors — the operator asked not to be paged
+    // Suppress noisy Anthropic/Workers AI quota errors — Pete asked not to be paged
     const msgStr = String(msg || '');
     if (msgStr.includes('credit balance') || msgStr.includes('credit_balance')
         || (msgStr.includes('failed') && (msgStr.includes('400') || msgStr.includes('402') || msgStr.includes('429')))
